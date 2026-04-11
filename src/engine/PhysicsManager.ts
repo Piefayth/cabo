@@ -1,0 +1,528 @@
+import * as THREE from "three";
+import {
+  CollisionType,
+  FaceOrientation,
+  HorizontalDirection,
+  VerticalDirection,
+  QueryOptions,
+  faceGetOpposite,
+  directionFromMovement,
+} from "./CollisionEnums";
+import { Viewpoint } from "./Viewpoint";
+import {
+  rightVector,
+  forwardVector,
+  depthMask,
+  visibleAxis,
+  axisMask,
+  vec3Mul,
+  vec3Abs,
+  vec3Sign,
+  almostClampVec3,
+  almostEqual,
+  almostEqualVec3,
+  EPSILON,
+  visibleOrientation,
+} from "./FezMath";
+import { CollisionManager } from "./CollisionManager";
+import { LevelManager } from "./LevelManager";
+import {
+  IComplexPhysicsEntity,
+  IPhysicsEntity,
+} from "../structure/PhysicsEntity";
+import {
+  CollisionResult,
+  MultipleHits,
+  NearestTriles,
+  PointCollision,
+  anyCollided,
+  multipleHitsFirst,
+  emptyCollisionHits,
+  emptyNearestTriles,
+  emptyInstanceHits,
+} from "../structure/CollisionStructures";
+import {
+  TrileInstance,
+  getTrileCenter,
+  getTransformedSize,
+  getRotatedFace,
+} from "../structure/Trile";
+
+/**
+ * PhysicsManager — the FEZ physics update loop.
+ * FEZ/Services/PhysicsManager.cs
+ *
+ * Handles gravity, friction, ground/wall/ceiling collision resolution,
+ * wall hugging (depth-axis pushing), ground clamping, and background transitions.
+ */
+
+// FEZ physics constants (per-frame, at 60fps)
+const GROUND_FRICTION = new THREE.Vector3(0.85, 1, 0.85);
+const AIR_FRICTION = 0.9975;
+const WATER_FRICTION = 0.925;
+const SLIDING_FRICTION = 0.8;
+const FALLING_SPEED_LIMIT = 0.4; // Terminal velocity for complex entities
+const SIMPLE_SPEED_LIMIT = 0.38;
+const HUGGING_DISTANCE = 0.002;
+
+export class PhysicsManager {
+  private collisionManager: CollisionManager;
+  private levelManager: LevelManager;
+
+  /** Current camera viewpoint (set each frame by the game) */
+  viewpoint: Viewpoint = Viewpoint.Front;
+
+  /** Gravity factor: positive = normal, negative = inverted */
+  get gravityFactor(): number {
+    return this.collisionManager.gravityFactor;
+  }
+  set gravityFactor(v: number) {
+    this.collisionManager.gravityFactor = v;
+  }
+
+  constructor(
+    collisionManager: CollisionManager,
+    levelManager: LevelManager,
+  ) {
+    this.collisionManager = collisionManager;
+    this.levelManager = levelManager;
+  }
+
+  /**
+   * Update a complex physics entity (player).
+   * FEZ/Services/PhysicsManager.cs — Update(IComplexPhysicsEntity)
+   */
+  updateComplex(entity: IComplexPhysicsEntity): boolean {
+    const wasGrounded = entity.grounded;
+
+    // 1. Move along with ground (moving platforms)
+    this.moveAlongWithGround(entity);
+
+    // 2. Compute impulse (velocity + ground movement)
+    const impulse = entity.velocity
+      .clone()
+      .add(entity.groundMovement);
+
+    // 3. Run collision
+    const { horizontal, vertical } = this.collisionManager.collideRectangle(
+      entity.center,
+      impulse,
+      entity.size,
+      entity.background ? QueryOptions.Background : QueryOptions.None,
+      entity.elasticity,
+      this.viewpoint,
+      entity.movingDirection,
+    );
+
+    // 4. Ground detection (downward collision)
+    entity.ground = emptyInstanceHits();
+    const isDownward =
+      this.gravityFactor > 0 ? impulse.y <= 0 : impulse.y >= 0;
+
+    if (isDownward && anyCollided(vertical)) {
+      if (vertical.nearLow.destination) {
+        entity.ground.nearLow = vertical.nearLow.destination;
+      }
+      if (vertical.farHigh.destination) {
+        entity.ground.farHigh = vertical.farHigh.destination;
+      }
+    }
+
+    // 5. Ceiling detection (upward collision)
+    entity.ceiling = emptyCollisionHits();
+    const isUpward = !isDownward;
+    if (isUpward && anyCollided(vertical)) {
+      entity.ceiling = vertical;
+    }
+
+    // 6. Track grounded state transitions
+    if (!wasGrounded && entity.grounded) {
+      entity.groundedVelocity = entity.velocity.clone();
+    } else if (!entity.grounded) {
+      entity.groundedVelocity = null;
+    }
+
+    // 7. Determine moving direction
+    const rv = rightVector(this.viewpoint);
+    const horizontalVel = entity.velocity.dot(rv);
+    entity.movingDirection = directionFromMovement(horizontalVel);
+
+    // 8. Determine ground clamping
+    let clampToGround: THREE.Vector3 | null = null;
+    if (anyCollided(vertical)) {
+      const first = multipleHitsFirst(vertical);
+      if (first.shouldBeClamped || entity.mustBeClampedToGround) {
+        clampToGround = first.nearestDistance;
+      }
+    }
+
+    // 9. Update velocity, position, friction
+    const moved = this.updateInternal(
+      entity,
+      horizontal,
+      vertical,
+      clampToGround,
+      wasGrounded,
+      true, // hugWalls
+      false, // velocityIrrelevant
+      false, // simple
+    );
+
+    // 10. Determine overlaps (corner collision)
+    this.determineOverlaps(entity);
+
+    return moved;
+  }
+
+  /**
+   * UpdateInternal — velocity integration and friction.
+   * FEZ/Services/PhysicsManager.cs — UpdateInternal()
+   */
+  private updateInternal(
+    entity: IPhysicsEntity,
+    horizontal: MultipleHits<CollisionResult>,
+    vertical: MultipleHits<CollisionResult>,
+    clampToGround: THREE.Vector3 | null,
+    wasGrounded: boolean,
+    hugWalls: boolean,
+    velocityIrrelevant: boolean,
+    simple: boolean,
+  ): boolean {
+    // Record wall collisions
+    if (!simple) {
+      entity.wallCollision = horizontal;
+    }
+
+    // Apply collision responses to velocity
+    if (horizontal.nearLow.collided) {
+      entity.velocity.add(horizontal.nearLow.response);
+    } else if (horizontal.farHigh.collided) {
+      entity.velocity.add(horizontal.farHigh.response);
+    }
+
+    if (vertical.nearLow.collided) {
+      entity.velocity.add(vertical.nearLow.response);
+    } else if (vertical.farHigh.collided) {
+      entity.velocity.add(vertical.farHigh.response);
+    }
+
+    // Select friction
+    let friction: THREE.Vector3;
+    const isComplex = "climbing" in entity;
+    const complex = entity as IComplexPhysicsEntity;
+
+    if (isComplex && complex.swimming) {
+      friction = new THREE.Vector3(WATER_FRICTION, WATER_FRICTION, WATER_FRICTION);
+    } else if (entity.grounded) {
+      if (entity.sliding) {
+        friction = new THREE.Vector3(SLIDING_FRICTION, 1, SLIDING_FRICTION);
+      } else {
+        friction = GROUND_FRICTION.clone();
+      }
+    } else {
+      friction = new THREE.Vector3(AIR_FRICTION, AIR_FRICTION, AIR_FRICTION);
+    }
+
+    // Friction amount interpolation based on gravity factor
+    const amount = (1.2 + Math.abs(this.gravityFactor) * 0.8) / 2.0;
+    const lerpedFriction = new THREE.Vector3(
+      1 + (friction.x - 1) * amount,
+      1 + (friction.y - 1) * amount,
+      1 + (friction.z - 1) * amount,
+    );
+
+    // Apply friction
+    entity.velocity = almostClampVec3(
+      vec3Mul(entity.velocity, lerpedFriction),
+      1e-6,
+    );
+
+    // Terminal velocity clamping
+    if (!entity.noVelocityClamping) {
+      const limit = simple ? SIMPLE_SPEED_LIMIT : FALLING_SPEED_LIMIT;
+      entity.velocity.y = Math.max(
+        -limit,
+        Math.min(limit, entity.velocity.y),
+      );
+    }
+
+    // Position update
+    const totalVelocity = entity.velocity
+      .clone()
+      .add(entity.groundMovement);
+
+    if (totalVelocity.lengthSq() > 1e-12 || !velocityIrrelevant) {
+      entity.center.add(totalVelocity);
+    }
+
+    // Post-update: ground clamping
+    if (clampToGround) {
+      this.clampToGround(entity, clampToGround);
+    }
+
+    // Wall hugging (depth-axis pushing)
+    if (hugWalls && !simple) {
+      this.hugWalls(entity, false, true);
+    }
+
+    // Redefine corners
+    this.determineOverlaps(entity);
+
+    return totalVelocity.lengthSq() > 1e-12;
+  }
+
+  /**
+   * MoveAlongWithGround — inherit velocity from moving platforms.
+   * FEZ/Services/PhysicsManager.cs — MoveAlongWithGround()
+   */
+  private moveAlongWithGround(entity: IPhysicsEntity): void {
+    const groundTrile = entity.ground.nearLow ?? entity.ground.farHigh;
+    if (!groundTrile?.physicsState) {
+      // Lost ground — transfer ground movement to velocity
+      if (entity.groundMovement.lengthSq() > 1e-12) {
+        const transfer = entity.groundMovement.clone().multiplyScalar(0.85);
+        entity.velocity.add(transfer);
+        entity.groundMovement.set(0, 0, 0);
+      }
+      return;
+    }
+
+    const ps = groundTrile.physicsState;
+    entity.groundMovement.copy(ps.velocity);
+
+    // Sticky platforms also inherit Y movement
+    if (ps.sticky) {
+      entity.groundMovement.y += ps.groundMovement.y;
+    }
+  }
+
+  /**
+   * ClampToGround — snap entity to the depth-axis position of its ground trile.
+   *
+   * This ensures the entity sits precisely on the correct depth plane,
+   * preventing Z-fighting and ensuring proper 2D alignment.
+   *
+   * FEZ/Services/PhysicsManager.cs — ClampToGround()
+   */
+  private clampToGround(
+    entity: IPhysicsEntity,
+    distance: THREE.Vector3,
+  ): void {
+    const vAxis = visibleAxis(this.viewpoint);
+    const mask = axisMask(vAxis);
+    const inverseMask = new THREE.Vector3(1, 1, 1).sub(mask);
+
+    // Snap depth-axis to ground trile's center depth
+    entity.center = vec3Mul(distance, mask).add(
+      vec3Mul(entity.center, inverseMask),
+    );
+  }
+
+  /**
+   * HugWalls — depth-axis pushing to prevent clipping into triles.
+   *
+   * Separate from collision: collision handles movement blocking,
+   * wall hugging handles depth-axis penetration prevention.
+   *
+   * For each corner collision, check if the Surface or Deep trile
+   * would cause depth-axis penetration, and push the entity out.
+   *
+   * FEZ/Services/PhysicsManager.cs — HugWalls()
+   */
+  private hugWalls(
+    entity: IPhysicsEntity,
+    determineBackground: boolean,
+    keepInFront: boolean,
+  ): boolean {
+    let hugged = false;
+
+    const fwd = forwardVector(this.viewpoint);
+    const dMask = depthMask(this.viewpoint);
+    const entityHalfDepth = vec3Mul(entity.size, dMask).multiplyScalar(0.5);
+
+    for (const corner of entity.cornerCollision) {
+      // Check both Surface and Deep triles
+      for (const instance of [
+        corner.instances.surface,
+        corner.instances.deep,
+      ]) {
+        if (!instance || !instance.enabled) continue;
+        if (!this.isHuggable(instance, entity)) continue;
+
+        const def = this.levelManager.trileSet.get(instance.trileId);
+        if (!def) continue;
+
+        const trileCenter = getTrileCenter(instance, def);
+        const trileHalfSize = getTransformedSize(instance, def)
+          .multiplyScalar(0.5);
+
+        // Compute the face of the trile facing the camera
+        const trileFacePoint = trileCenter
+          .clone()
+          .sub(vec3Mul(trileHalfSize, fwd));
+
+        // Entity's depth-axis edge toward the trile
+        const entityEdge = entity.center
+          .clone()
+          .add(vec3Mul(entityHalfDepth, fwd));
+
+        // Penetration: how far the entity has gone into the trile along depth
+        const penetration = entityEdge.clone().sub(trileFacePoint);
+        const penetrationDot = penetration.dot(fwd);
+
+        if (penetrationDot < 0) {
+          // Entity is penetrating
+
+          if (determineBackground) {
+            // Check if we're more than halfway through
+            const totalSize =
+              vec3Mul(trileHalfSize, vec3Abs(fwd)).length() +
+              entityHalfDepth.length();
+            if (Math.abs(penetrationDot) > totalSize) {
+              // Entity is behind this trile — mark as background
+              entity.background = true;
+              return true;
+            }
+          }
+
+          if (keepInFront) {
+            // Push entity out along depth axis
+            const pushback = vec3Mul(
+              penetration,
+              vec3Abs(fwd),
+            ).negate();
+            entity.center.add(pushback);
+            hugged = true;
+          }
+        }
+      }
+    }
+
+    return hugged;
+  }
+
+  /**
+   * IsHuggable — determines if a trile should block depth movement.
+   *
+   * Returns true for triles that are solid geometry but don't have
+   * AllSides collision on the visible face (those are handled by main collision).
+   * Thin triles, immaterial triles, and carried objects are not huggable.
+   *
+   * FEZ/Services/PhysicsManager.cs — IsHuggable()
+   */
+  private isHuggable(
+    instance: TrileInstance,
+    entity: IPhysicsEntity,
+  ): boolean {
+    if (!instance.enabled) return false;
+
+    const def = this.levelManager.trileSet.get(instance.trileId);
+    if (!def) return false;
+    if (def.immaterial) return false;
+    if (def.thin) return false;
+
+    // Don't self-hug (for physics triles)
+    if (
+      instance.physicsState &&
+      entity === (instance.physicsState as unknown as IPhysicsEntity)
+    ) {
+      return false;
+    }
+
+    // Check the visible face — AllSides triles are handled by main collision, not hugging
+    const face = visibleOrientation(this.viewpoint);
+    const ct = getRotatedFace(
+      face,
+      instance,
+      def,
+      this.levelManager.triles,
+      this.levelManager.trileSet,
+    );
+
+    // Huggable if face is NOT one of: Immaterial, TopNoStraightLedge, AllSides
+    return (
+      ct !== CollisionType.Immaterial &&
+      ct !== CollisionType.TopNoStraightLedge &&
+      ct !== CollisionType.AllSides
+    );
+  }
+
+  /**
+   * DetermineOverlaps — recompute corner collision queries.
+   * Probes 4 corners of the entity's AABB to find Surface/Deep triles.
+   *
+   * FEZ/Services/PhysicsManager.cs — DetermineOverlaps()
+   */
+  determineOverlaps(entity: IPhysicsEntity): void {
+    const rv = rightVector(this.viewpoint);
+    const halfSize = entity.size.clone().multiplyScalar(0.5);
+    const eps = new THREE.Vector3(EPSILON, EPSILON, EPSILON);
+    const shrunk = halfSize.clone().sub(eps);
+
+    const options = entity.background
+      ? QueryOptions.Background
+      : QueryOptions.None;
+
+    // 4 corners: (±right, ±up) combinations
+    const up = new THREE.Vector3(0, 1, 0);
+    const corners = [
+      entity.center.clone().add(vec3Mul(rv.clone().negate().sub(up), shrunk)), // bottom-left
+      entity.center.clone().add(vec3Mul(rv.clone().add(up.clone().negate()), shrunk)), // bottom-right
+      entity.center.clone().add(vec3Mul(rv.clone().negate().add(up), shrunk)), // top-left
+      entity.center.clone().add(vec3Mul(rv.clone().add(up), shrunk)), // top-right
+    ];
+
+    for (let i = 0; i < 4; i++) {
+      const nearest = this.levelManager.nearestTrile(
+        corners[i],
+        options,
+        this.viewpoint,
+      );
+      entity.cornerCollision[i] = {
+        point: corners[i],
+        instances: nearest,
+      };
+    }
+
+    // For complex entities, also check axis collision (Up/Down)
+    if ("axisCollision" in entity) {
+      const complex = entity as IComplexPhysicsEntity;
+      // Up edge
+      const topCenter = entity.center.clone().add(
+        new THREE.Vector3(0, halfSize.y - EPSILON, 0),
+      );
+      complex.axisCollision.set(
+        VerticalDirection.Up,
+        this.levelManager.nearestTrile(topCenter, options, this.viewpoint),
+      );
+      // Down edge
+      const bottomCenter = entity.center.clone().add(
+        new THREE.Vector3(0, -(halfSize.y - EPSILON), 0),
+      );
+      complex.axisCollision.set(
+        VerticalDirection.Down,
+        this.levelManager.nearestTrile(bottomCenter, options, this.viewpoint),
+      );
+    }
+  }
+
+  /**
+   * DetermineInBackground — check if entity should transition to background layer.
+   *
+   * FEZ/Services/PhysicsManager.cs — DetermineInBackground()
+   */
+  determineInBackground(entity: IComplexPhysicsEntity): void {
+    entity.background = false;
+
+    // Determine overlaps and hug walls with background detection
+    this.determineOverlaps(entity);
+    const isBehind = this.hugWalls(entity, true, false);
+
+    if (isBehind) {
+      entity.background = true;
+      // Re-determine with background flag
+      this.determineOverlaps(entity);
+      this.hugWalls(entity, false, true);
+    }
+  }
+}

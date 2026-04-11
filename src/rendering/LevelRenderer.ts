@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Level } from "../structure/Level";
+import { TrileDefinition, TrileInstance, getTrileCenter } from "../structure/Trile";
 
 /**
  * Renders a FEZ level's trile grid using Three.js instanced meshes.
@@ -17,20 +18,20 @@ export class LevelRenderer {
     this.clear();
 
     // Group trile instances by their definition ID
-    const groups = new Map<number, THREE.Vector3[]>();
+    const groups = new Map<number, TrileInstance[]>();
     for (const trile of level.triles.values()) {
+      if (!trile.enabled) continue;
       let list = groups.get(trile.trileId);
       if (!list) {
         list = [];
         groups.set(trile.trileId, list);
       }
-      list.push(trile.position);
+      list.push(trile);
     }
 
     const geometry = new THREE.BoxGeometry(1, 1, 1);
 
-    // Create an instanced mesh per trile type
-    for (const [trileId, positions] of groups) {
+    for (const [trileId, instances] of groups) {
       const def = level.trileSet.get(trileId);
       if (!def) continue;
 
@@ -38,15 +39,22 @@ export class LevelRenderer {
         color: def.color,
         roughness: 0.8,
         metalness: 0.1,
+        transparent: def.immaterial,
+        opacity: def.immaterial ? 0.3 : 1.0,
       });
 
-      const mesh = new THREE.InstancedMesh(geometry, material, positions.length);
+      const mesh = new THREE.InstancedMesh(
+        geometry,
+        material,
+        instances.length,
+      );
       const matrix = new THREE.Matrix4();
 
-      for (let i = 0; i < positions.length; i++) {
-        const p = positions[i];
-        // Trile positions are grid-based; offset by 0.5 to center in the cell
-        matrix.setPosition(p.x + 0.5, p.y + 0.5, p.z + 0.5);
+      for (let i = 0; i < instances.length; i++) {
+        const inst = instances[i];
+        const center = getTrileCenter(inst, def);
+        matrix.makeRotationY(inst.phi);
+        matrix.setPosition(center);
         mesh.setMatrixAt(i, matrix);
       }
 

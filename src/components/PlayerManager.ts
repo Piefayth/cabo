@@ -3,9 +3,21 @@ import { BaseDrawableComponent } from "../core/Component";
 import { ServiceContainer } from "../core/ServiceContainer";
 import { Camera } from "../engine/Camera";
 import { InputManager } from "../engine/InputManager";
-import { Viewpoint, getRightVector, getDepthAxis } from "../engine/Viewpoint";
-import { Level } from "../structure/Level";
-import { collidePlayer, projectToScreen, isSolidAt } from "../engine/Collision";
+import { PhysicsManager } from "../engine/PhysicsManager";
+import { Viewpoint } from "../engine/Viewpoint";
+import {
+  HorizontalDirection,
+  directionFromMovement,
+} from "../engine/CollisionEnums";
+import {
+  rightVector,
+  vec3Mul,
+  almostEqual,
+} from "../engine/FezMath";
+import {
+  IComplexPhysicsEntity,
+  createComplexPhysicsState,
+} from "../structure/PhysicsEntity";
 
 export enum ActionType {
   Idle,
@@ -15,169 +27,136 @@ export enum ActionType {
   Landing,
 }
 
-const MOVE_SPEED = 5;
-const JUMP_VELOCITY = 10;
-const GRAVITY = -28;
-const MAX_FALL_SPEED = -20;
-const FRICTION_GROUND = 12;
-const FRICTION_AIR = 3;
+/**
+ * FEZ applies gravity as a per-frame velocity delta inside the game components,
+ * not the physics manager. The physics manager handles friction and collision.
+ * These are per-frame values at 60fps.
+ */
+const GRAVITY_PER_FRAME = 0.0075 / 1.0; // ~0.0075 per frame in FEZ
+const JUMP_VELOCITY = 0.1575; // FEZ jump initial velocity
+const MOVE_SPEED = 0.0875; // FEZ horizontal acceleration per frame
+
+/** Player size matching Gomez's bounding box */
+const PLAYER_SIZE = new THREE.Vector3(0.8, 1.5, 0.8);
 
 export class PlayerManager extends BaseDrawableComponent {
-  position = new THREE.Vector3();
-  velocity = new THREE.Vector3(0, 0, 0);
+  /** The physics entity state — matches IComplexPhysicsEntity exactly */
+  physics!: IComplexPhysicsEntity;
+
   action = ActionType.Idle;
   facingRight = true;
-  grounded = false;
 
   private mesh!: THREE.Mesh;
   private camera!: Camera;
   private input!: InputManager;
-  private level!: Level;
+  private physicsManager!: PhysicsManager;
 
   constructor(services: ServiceContainer) {
     super(services, 10, 10);
   }
 
-  initialize(camera: Camera, input: InputManager, level: Level): void {
+  initialize(
+    camera: Camera,
+    input: InputManager,
+    physicsManager: PhysicsManager,
+    startPosition: THREE.Vector3,
+  ): void {
     this.camera = camera;
     this.input = input;
-    this.level = level;
+    this.physicsManager = physicsManager;
 
-    // Simple player mesh — Gomez-like proportions (short & square)
-    const geo = new THREE.BoxGeometry(0.8, 1.2, 0.8);
+    // Initialize physics state (center is at the middle of the player)
+    this.physics = createComplexPhysicsState(
+      startPosition.clone().add(new THREE.Vector3(0, PLAYER_SIZE.y / 2, 0)),
+      PLAYER_SIZE,
+    );
+
+    // Simple player mesh — Gomez-like proportions
+    const geo = new THREE.BoxGeometry(
+      PLAYER_SIZE.x,
+      PLAYER_SIZE.y,
+      PLAYER_SIZE.x,
+    );
     const mat = new THREE.MeshStandardMaterial({ color: 0xffffff });
     this.mesh = new THREE.Mesh(geo, mat);
     this.services.get<THREE.Scene>("scene").add(this.mesh);
+  }
 
-    this.position.copy(level.playerStart);
+  /** Convenience: feet position (bottom of bounding box) */
+  get position(): THREE.Vector3 {
+    return this.physics.center
+      .clone()
+      .sub(new THREE.Vector3(0, PLAYER_SIZE.y / 2, 0));
   }
 
   update(dt: number): void {
     if (this.camera.isTransitioning) {
-      this._updateMeshPosition();
-      return; // Freeze player during rotation (like FEZ)
+      this._updateMesh();
+      return; // Freeze during viewpoint rotation (like FEZ)
     }
 
     const viewpoint = this.camera.viewpoint;
-    this._handleMovement(dt, viewpoint);
-    this._applyGravity(dt);
-    this._resolveCollisions(viewpoint);
-    this._updateAction();
-    this._updateMeshPosition();
-  }
+    this.physicsManager.viewpoint = viewpoint;
 
-  private _handleMovement(dt: number, viewpoint: Viewpoint): void {
+    // --- Horizontal movement ---
     const mx = this.input.state.movement.x;
-    const right = getRightVector(viewpoint);
+    const rv = rightVector(viewpoint);
 
-    // Horizontal movement along the screen-right axis
-    const targetVelX = mx * MOVE_SPEED;
-    const friction = this.grounded ? FRICTION_GROUND : FRICTION_AIR;
+    // FEZ-style: direct velocity setting along screen-right
+    const targetVel = rv.clone().multiplyScalar(mx * MOVE_SPEED);
 
-    // Get current screen-horizontal velocity
-    const currentScreenVel =
-      this.velocity.x * right[0] + this.velocity.z * right[2];
-    const newScreenVel = this._approach(currentScreenVel, targetVelX, friction * dt);
+    // Apply to velocity (keeping vertical component)
+    const currentHoriz = rv.clone().multiplyScalar(this.physics.velocity.dot(rv));
+    const verticalVel = this.physics.velocity.clone().sub(currentHoriz);
 
-    // Apply to world velocity along right vector
-    this.velocity.x = newScreenVel * right[0];
-    this.velocity.z = newScreenVel * right[2];
+    if (Math.abs(mx) > 0.1) {
+      // Blend toward target
+      const blend = this.physics.grounded ? 0.4 : 0.15;
+      const newHoriz = currentHoriz.lerp(targetVel, blend);
+      this.physics.velocity.copy(verticalVel.add(newHoriz));
+    }
 
-    // Track facing direction
+    // Facing direction
     if (mx > 0.1) this.facingRight = true;
     else if (mx < -0.1) this.facingRight = false;
 
-    // Jump
-    if (this.input.state.jump.pressed && this.grounded) {
-      this.velocity.y = JUMP_VELOCITY;
-      this.grounded = false;
+    // Moving direction for collision edge testing
+    this.physics.movingDirection = directionFromMovement(mx);
+
+    // --- Jump ---
+    if (this.input.state.jump.pressed && this.physics.grounded) {
+      this.physics.velocity.y = JUMP_VELOCITY;
     }
 
-    // Apply velocity to position
-    this.position.x += this.velocity.x * dt;
-    this.position.z += this.velocity.z * dt;
-  }
+    // --- Gravity ---
+    this.physics.velocity.y -= GRAVITY_PER_FRAME * this.physicsManager.gravityFactor;
 
-  private _applyGravity(dt: number): void {
-    this.velocity.y += GRAVITY * dt;
-    if (this.velocity.y < MAX_FALL_SPEED) {
-      this.velocity.y = MAX_FALL_SPEED;
-    }
-    this.position.y += this.velocity.y * dt;
-  }
+    // --- Physics update (collision, friction, position) ---
+    this.physicsManager.updateComplex(this.physics);
 
-  private _resolveCollisions(viewpoint: Viewpoint): void {
-    const collision = collidePlayer(this.level, this.position, viewpoint);
-    const right = getRightVector(viewpoint);
-    const { screenX } = projectToScreen(this.position, viewpoint);
+    // --- Action state ---
+    this._updateAction();
 
-    // Ground
-    if (collision.grounded && this.velocity.y <= 0) {
-      this.position.y = collision.groundY;
-      this.velocity.y = 0;
-      this.grounded = true;
-    } else {
-      this.grounded = false;
-    }
-
-    // Ceiling
-    if (collision.ceiling && this.velocity.y > 0) {
-      this.velocity.y = 0;
-    }
-
-    // Walls: push player out
-    const halfW = 0.4;
-    if (collision.wallLeft) {
-      const wallEdge = Math.floor(screenX - halfW) + 1;
-      const newScreenX = wallEdge + halfW + 0.001;
-      const offset = newScreenX - screenX;
-      this.position.x += offset * right[0];
-      this.position.z += offset * right[2];
-      // Zero out velocity along right vector if moving into wall
-      const velDot = this.velocity.x * right[0] + this.velocity.z * right[2];
-      if (velDot < 0) {
-        this.velocity.x -= velDot * right[0];
-        this.velocity.z -= velDot * right[2];
-      }
-    }
-    if (collision.wallRight) {
-      const wallEdge = Math.floor(screenX + halfW);
-      const newScreenX = wallEdge - halfW - 0.001;
-      const offset = newScreenX - screenX;
-      this.position.x += offset * right[0];
-      this.position.z += offset * right[2];
-      const velDot = this.velocity.x * right[0] + this.velocity.z * right[2];
-      if (velDot > 0) {
-        this.velocity.x -= velDot * right[0];
-        this.velocity.z -= velDot * right[2];
-      }
-    }
-
-    // Fall out of world — respawn
-    if (this.position.y < -10) {
-      this.position.copy(this.level.playerStart);
-      this.velocity.set(0, 0, 0);
-    }
+    // --- Update mesh ---
+    this._updateMesh();
   }
 
   private _updateAction(): void {
-    if (this.grounded) {
-      const speed = Math.abs(this.velocity.x) + Math.abs(this.velocity.z);
-      this.action = speed > 0.5 ? ActionType.Walking : ActionType.Idle;
+    if (this.physics.grounded) {
+      const speed =
+        Math.abs(this.physics.velocity.x) +
+        Math.abs(this.physics.velocity.z);
+      this.action = speed > 0.001 ? ActionType.Walking : ActionType.Idle;
     } else {
       this.action =
-        this.velocity.y > 0 ? ActionType.Jumping : ActionType.Falling;
+        this.physics.velocity.y > 0 ? ActionType.Jumping : ActionType.Falling;
     }
   }
 
-  private _updateMeshPosition(): void {
-    this.mesh.position.set(
-      this.position.x,
-      this.position.y + 0.6, // offset to center mesh on feet position
-      this.position.z,
-    );
+  private _updateMesh(): void {
+    this.mesh.position.copy(this.physics.center);
 
-    // Face the player mesh toward camera and flip based on facing direction
+    // Face the player mesh toward camera
     const angle = Math.atan2(
       this.camera.camera.position.x - this.mesh.position.x,
       this.camera.camera.position.z - this.mesh.position.z,
@@ -188,12 +167,5 @@ export class PlayerManager extends BaseDrawableComponent {
 
   draw(): void {
     // Mesh is in the scene, Three.js handles rendering
-  }
-
-  private _approach(current: number, target: number, maxDelta: number): number {
-    if (current < target) {
-      return Math.min(current + maxDelta, target);
-    }
-    return Math.max(current - maxDelta, target);
   }
 }
