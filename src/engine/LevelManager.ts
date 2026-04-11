@@ -306,8 +306,10 @@ export class LevelManager {
       }
     }
 
-    // Fallback: return the exact emplacement instance even if it doesn't pass containment
-    return exact?.enabled ? exact : null;
+    // No trile at this depth contains the query point in screen-space.
+    // Return null — do NOT fall back to the exact emplacement, as that
+    // causes phantom collisions with triles the player isn't actually near.
+    return null;
   }
 
   /**

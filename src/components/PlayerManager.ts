@@ -55,6 +55,9 @@ export class PlayerManager extends BaseDrawableComponent {
     super(services, 10, 10);
   }
 
+  private spawnPoint = new THREE.Vector3();
+  private readonly KILL_FLOOR_Y = -20;
+
   initialize(
     camera: Camera,
     input: InputManager,
@@ -64,6 +67,7 @@ export class PlayerManager extends BaseDrawableComponent {
     this.camera = camera;
     this.input = input;
     this.physicsManager = physicsManager;
+    this.spawnPoint.copy(startPosition);
 
     // Initialize physics state (center is at the middle of the player)
     this.physics = createComplexPhysicsState(
@@ -134,6 +138,12 @@ export class PlayerManager extends BaseDrawableComponent {
     // --- Physics update (collision, friction, position) ---
     this.physicsManager.updateComplex(this.physics);
 
+    // --- Kill floor ---
+    if (this.physics.center.y < this.KILL_FLOOR_Y) {
+      this.respawn();
+      return;
+    }
+
     // --- Action state ---
     this._updateAction();
 
@@ -151,6 +161,16 @@ export class PlayerManager extends BaseDrawableComponent {
       this.action =
         this.physics.velocity.y > 0 ? ActionType.Jumping : ActionType.Falling;
     }
+  }
+
+  respawn(): void {
+    this.physics.center.copy(this.spawnPoint).add(new THREE.Vector3(0, PLAYER_SIZE.y / 2, 0));
+    this.physics.velocity.set(0, 0, 0);
+    this.physics.groundMovement.set(0, 0, 0);
+    this.physics.ground = { nearLow: null, farHigh: null };
+    this.physics.background = false;
+    this.action = ActionType.Falling;
+    this._updateMesh();
   }
 
   private _updateMesh(): void {
