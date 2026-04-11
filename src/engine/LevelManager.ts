@@ -314,6 +314,8 @@ export class LevelManager {
 
   /**
    * OffsetInstanceContains — check if a position falls within a trile's screen-space AABB.
+   * Uses a small epsilon to prevent boundary-condition failures (e.g., probe at
+   * y=2.001 failing containment for a block with top at y=2.0).
    * FezEngine/Services/LevelManager.cs, lines 1032-1046
    */
   private offsetInstanceContains(
@@ -327,23 +329,22 @@ export class LevelManager {
     const center = getTrileCenter(instance, def);
     const size = getTransformedSize(instance, def);
     const halfSize = size.clone().multiplyScalar(0.5);
+    const eps = 0.01; // Containment epsilon — matches FEZ's fuzzy matching tolerance
 
     // Screen-space containment (skip depth check)
     if (depthIsZ) {
-      // X and Y are visible
       return (
-        position.x >= center.x - halfSize.x &&
-        position.x <= center.x + halfSize.x &&
-        position.y >= center.y - halfSize.y &&
-        position.y <= center.y + halfSize.y
+        position.x >= center.x - halfSize.x - eps &&
+        position.x <= center.x + halfSize.x + eps &&
+        position.y >= center.y - halfSize.y - eps &&
+        position.y <= center.y + halfSize.y + eps
       );
     } else {
-      // Z and Y are visible
       return (
-        position.z >= center.z - halfSize.z &&
-        position.z <= center.z + halfSize.z &&
-        position.y >= center.y - halfSize.y &&
-        position.y <= center.y + halfSize.y
+        position.z >= center.z - halfSize.z - eps &&
+        position.z <= center.z + halfSize.z + eps &&
+        position.y >= center.y - halfSize.y - eps &&
+        position.y <= center.y + halfSize.y + eps
       );
     }
   }

@@ -504,14 +504,17 @@ export class CollisionManager {
     }
 
     // Check 1: Was the origin already behind the face? (started inside)
+    // Use -EPSILON tolerance: being exactly at or very slightly behind the face
+    // is treated as "behind" to prevent phantom collisions at grid boundaries
+    // (e.g., walking on flat ground shouldn't collide with the next ground block's side face).
     const originToFace = origin.clone().sub(prevFacePoint);
-    if (originToFace.dot(normal) < 0) {
+    if (originToFace.dot(normal) < -EPSILON) {
       return new THREE.Vector3(0, 0, 0); // Already inside — skip
     }
 
     // Check 2: Is the destination still in front of the face? (didn't reach it)
     const destToFace = destination.clone().sub(facePoint);
-    if (destToFace.dot(normal) > 0) {
+    if (destToFace.dot(normal) > EPSILON) {
       return new THREE.Vector3(0, 0, 0); // Didn't penetrate — skip
     }
 
