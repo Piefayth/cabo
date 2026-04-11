@@ -90,7 +90,11 @@ export class Camera extends BaseComponent {
   }
 
   update(dt: number): void {
-    if (!this._transitioning) return;
+    if (!this._transitioning) {
+      // Always update camera position to follow center, even when not transitioning
+      this._applyCameraPosition();
+      return;
+    }
 
     this._transitionProgress += dt / this._transitionDuration;
 
