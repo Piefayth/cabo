@@ -138,13 +138,10 @@ export class LevelManager {
       const limit = this.screenSpaceLimits.get(tileKey);
       if (!limit) return emptyNearestTriles();
 
-      if (forwardSign > 0) {
-        depthStart = limit.start;
-        depthEnd = limit.end;
-      } else {
-        depthStart = limit.end;
-        depthEnd = limit.start;
-      }
+      // limit.start is always camera-near, limit.end is always camera-far.
+      // No swap needed — the walk loop handles direction via forwardSign.
+      depthStart = limit.start;
+      depthEnd = limit.end;
     } else {
       // Default fuzzy mode: check exact tile + 2 adjacent neighbors
       const sideFrac = sideCoord - sideInt;
@@ -159,6 +156,9 @@ export class LevelManager {
       ];
 
       let foundAny = false;
+      // Union must widen the range: take the most-camera-near start
+      // and the most-camera-far end across all neighbor tiles.
+      // limit.start is always camera-near, limit.end is always camera-far.
       let unionStart = forwardSign > 0 ? Infinity : -Infinity;
       let unionEnd = forwardSign > 0 ? -Infinity : Infinity;
 
@@ -167,11 +167,13 @@ export class LevelManager {
         if (!limit) continue;
         foundAny = true;
         if (forwardSign > 0) {
+          // Positive scan: start is low value, end is high value
           unionStart = Math.min(unionStart, limit.start);
           unionEnd = Math.max(unionEnd, limit.end);
         } else {
-          unionStart = Math.max(unionStart, limit.end);
-          unionEnd = Math.min(unionEnd, limit.start);
+          // Negative scan: start is high value, end is low value
+          unionStart = Math.max(unionStart, limit.start);
+          unionEnd = Math.min(unionEnd, limit.end);
         }
       }
 

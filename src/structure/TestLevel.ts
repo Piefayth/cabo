@@ -12,20 +12,27 @@ import {
 import { CollisionType, FaceOrientation } from "../engine/CollisionEnums";
 
 /**
- * Build a test level that demonstrates FEZ's perspective-shifting mechanic
- * using the faithful collision system with per-face collision types.
+ * Build a test level that demonstrates FEZ's perspective-shifting mechanic.
+ *
+ * IMPORTANT: Unlike the old version, ground is only at SPECIFIC depths.
+ * This is critical because NearestTrile scans front-to-back along the
+ * depth axis and returns the first solid trile found. If ground exists
+ * at every depth, the player always gets clamped to the camera-nearest
+ * depth, making the perspective trick meaningless.
+ *
+ * In real FEZ levels, platforms exist at specific depths and the magic
+ * is that platforms at DIFFERENT depths APPEAR to connect in 2D.
  */
 export function createTestLevel(): Level {
   const trileSet = new Map<number, TrileDefinition>();
 
-  // Define block types with proper face-based collision
   trileSet.set(1, solidTrile(1, "grass", 0x6ab04c));
   trileSet.set(2, solidTrile(2, "dirt", 0x8b6914));
   trileSet.set(3, solidTrile(3, "stone", 0x7f8c8d));
   trileSet.set(4, solidTrile(4, "wood", 0xb07830));
   trileSet.set(5, solidTrile(5, "gold", 0xf1c40f));
-  trileSet.set(6, platformTrile(6, "platform", 0xc0392b)); // TopOnly platform
-  trileSet.set(7, immaterialTrile(7, "decoration", 0x9b59b6)); // Pass-through
+  trileSet.set(6, platformTrile(6, "platform", 0xc0392b));
+  trileSet.set(7, immaterialTrile(7, "decoration", 0x9b59b6));
 
   const triles = new Map<string, TrileInstance>();
 
@@ -45,80 +52,128 @@ export function createTestLevel(): Level {
     triles.set(emplacementKey(emp), instance);
   }
 
-  // === Ground floor platform (wide, centered) ===
-  for (let x = -3; x <= 8; x++) {
-    for (let z = -3; z <= 8; z++) {
-      place(x, 0, z, 2); // dirt base
-      place(x, 1, z, 1); // grass top
+  // Helper: fill a horizontal strip at a specific depth
+  function groundStrip(
+    xMin: number,
+    xMax: number,
+    y: number,
+    z: number,
+    grassId = 1,
+    dirtId = 2,
+  ): void {
+    for (let x = xMin; x <= xMax; x++) {
+      place(x, y, z, dirtId);
+      place(x, y + 1, z, grassId);
     }
   }
 
-  // === Tower (left side) ===
-  for (let y = 2; y <= 8; y++) {
-    place(-2, y, 2, 3);
-    place(-2, y, 3, 3);
-    place(-3, y, 2, 3);
+  // ===================================================================
+  // MAIN PLATFORM — the starting area, at z=3 (a single depth!)
+  // From FRONT view: a wide ground platform
+  // ===================================================================
+  groundStrip(-4, 10, 0, 3);
+
+  // Also add some depth to the starting ground so it looks 3D when rotated
+  groundStrip(-4, 10, 0, 4);
+  groundStrip(-4, 10, 0, 2);
+
+  // ===================================================================
+  // TOWER — left side, at z=3 (same depth as main ground)
+  // The player can walk into it and be stopped (same depth = real wall)
+  // ===================================================================
+  for (let y = 2; y <= 7; y++) {
     place(-3, y, 3, 3);
+    place(-4, y, 3, 3);
+    place(-3, y, 4, 3);
+    place(-4, y, 4, 3);
+    place(-3, y, 2, 3);
+    place(-4, y, 2, 3);
   }
-  // Tower top platform
-  for (let x = -4; x <= 0; x++) {
-    for (let z = 1; z <= 4; z++) {
-      place(x, 9, z, 3);
-    }
+  // Tower top
+  for (let x = -5; x <= -1; x++) {
+    place(x, 8, 3, 3);
+    place(x, 8, 4, 3);
+    place(x, 8, 2, 3);
   }
 
-  // === FEZ TRICK: Disconnected platforms that align from FRONT view ===
-  // From the FRONT view (looking along -Z), these appear as a staircase.
-  // They're at different Z depths and don't connect in 3D.
+  // ===================================================================
+  // FEZ TRICK: PERSPECTIVE STAIRCASE
+  // These platforms are at DIFFERENT z-depths but from the FRONT view
+  // they appear as a continuous ascending staircase.
+  //
+  // From FRONT view (camera at +Z looking at -Z):
+  //   Step 1 (y=3): x=2..4   — actually at z=3
+  //   Step 2 (y=5): x=4..6   — actually at z=6 (different depth!)
+  //   Step 3 (y=7): x=6..8   — actually at z=1 (yet another depth!)
+  //
+  // In 2D they form a staircase. In 3D they're disconnected.
+  // The collision system scans depth and finds them, so you can walk on them.
+  // ===================================================================
 
-  // Step 1: at z=2
+  // Step 1: at z=3 (same as main ground, naturally reachable)
   for (let x = 2; x <= 4; x++) {
-    place(x, 3, 2, 4);
+    place(x, 2, 3, 4);
+    place(x, 3, 3, 4);
   }
 
-  // Step 2: at z=5 (different depth!)
+  // Step 2: at z=6 (different depth! — only connects in 2D front view)
   for (let x = 4; x <= 6; x++) {
-    place(x, 5, 5, 4);
+    place(x, 4, 6, 4);
+    place(x, 5, 6, 4);
   }
 
   // Step 3: at z=1 (yet another depth!)
   for (let x = 6; x <= 8; x++) {
+    place(x, 6, 1, 5);
     place(x, 7, 1, 5);
   }
 
-  // === RIGHT view staircase (looking along -X) ===
-  place(5, 3, 6, 4);
+  // ===================================================================
+  // RIGHT VIEW STAIRCASE
+  // From the RIGHT view (camera at +X looking at -X), these form steps.
+  // In 3D they're at different X depths.
+  // ===================================================================
   place(5, 3, 7, 4);
-  place(3, 5, 6, 4);
+  place(5, 3, 8, 4);
   place(3, 5, 7, 4);
-  place(1, 7, 6, 5);
+  place(3, 5, 8, 4);
   place(1, 7, 7, 5);
+  place(1, 7, 8, 5);
 
-  // === TopOnly platforms — can jump through from below ===
-  place(2, 4, 3, 6);
-  place(3, 4, 3, 6);
-  place(4, 6, 3, 6);
-  place(5, 6, 3, 6);
+  // ===================================================================
+  // TopOnly PLATFORMS — can jump through from below
+  // ===================================================================
+  place(0, 4, 3, 6);
+  place(1, 4, 3, 6);
+  place(0, 6, 3, 6);
+  place(1, 6, 3, 6);
 
-  // === Decorative immaterial triles ===
-  place(0, 3, 0, 7);
-  place(1, 3, 0, 7);
-
-  // === Bridge that only appears connected from FRONT view ===
-  for (let y = 2; y <= 5; y++) {
-    place(0, y, 0, 3);
+  // ===================================================================
+  // FLOATING ISLAND — only reachable from certain viewpoints
+  // From FRONT: appears to be right next to the main platform
+  // From RIGHT: reveals it's far away in Z
+  // ===================================================================
+  for (let x = 11; x <= 13; x++) {
+    place(x, 0, 8, 2);
+    place(x, 1, 8, 1);
   }
+  // Wall on the island
+  place(13, 2, 8, 3);
+  place(13, 3, 8, 3);
+
+  // ===================================================================
+  // DECORATIVE column — immaterial (walk through)
+  // ===================================================================
   for (let y = 2; y <= 5; y++) {
-    place(0, y, 5, 3);
+    place(5, y, 3, 7);
   }
-  place(0, 5, -1, 5);
 
   const level: Level = {
     name: "Test Level",
-    size: new THREE.Vector3(16, 16, 16),
+    size: new THREE.Vector3(20, 16, 16),
     trileSet,
     triles,
-    playerStart: new THREE.Vector3(2.5, 2, 3),
+    playerStart: new THREE.Vector3(0.5, 2, 3),
     waterHeight: null,
     skyColor: 0x1a1a2e,
     ambientColor: 0x404060,

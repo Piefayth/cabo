@@ -147,12 +147,64 @@ export class PhysicsManager {
     const horizontalVel = entity.velocity.dot(rv);
     entity.movingDirection = directionFromMovement(horizontalVel);
 
-    // 8. Determine ground clamping
+    // 8. Determine ground clamping (from vertical collision)
     let clampToGround: THREE.Vector3 | null = null;
     if (anyCollided(vertical)) {
       const first = multipleHitsFirst(vertical);
       if (first.shouldBeClamped || entity.mustBeClampedToGround) {
         clampToGround = first.nearestDistance;
+      }
+    }
+
+    // 8b. Wall-contact depth clamping ("snap to front" behavior).
+    // In FEZ, when the player walks horizontally into a block at a different
+    // depth, they get depth-clamped to that block's camera-facing surface.
+    // This ensures the player walks ON the surface of geometry rather than
+    // being stopped by blocks at invisible depth positions.
+    if (entity.grounded && anyCollided(horizontal)) {
+      const wallHit = multipleHitsFirst(horizontal);
+      if (wallHit.destination) {
+        const wallDef = this.levelManager.trileSet.get(wallHit.destination.trileId);
+        if (wallDef) {
+          const wallCenter = getTrileCenter(wallHit.destination, wallDef);
+          const wallHalfSize = getTransformedSize(wallHit.destination, wallDef)
+            .multiplyScalar(0.5);
+
+          const fwd = forwardVector(this.viewpoint);
+          const negFwd = fwd.clone().negate();
+          const absFwd = vec3Abs(fwd);
+          const dMask = depthMask(this.viewpoint);
+          const entityHalfDepth = vec3Mul(entity.size, dMask).multiplyScalar(0.5);
+
+          // Camera-facing surface of the wall
+          const wallFrontFace = wallCenter.clone().add(vec3Mul(wallHalfSize, negFwd));
+
+          // Target depth: entity edge flush with wall's front face
+          // entityCenter + entityHalfDepth * forward = wallFrontFace
+          // entityCenter = wallFrontFace - entityHalfDepth * forward
+          const targetCenter = wallFrontFace.clone().sub(vec3Mul(entityHalfDepth, fwd));
+
+          // Only clamp the depth axis component
+          const currentDepth = entity.center.dot(absFwd);
+          const targetDepth = targetCenter.dot(absFwd);
+
+          // Only snap if the entity is actually behind the wall face (farther from camera)
+          // For negative forwardSign (Front/Left), "behind" means lower depth value
+          // For positive forwardSign (Back/Right), "behind" means higher depth value
+          const forwardSign = fwd.dot(absFwd); // sign of the depth axis in forward direction
+          const isBehind = forwardSign < 0
+            ? currentDepth < targetDepth // Front/Left: entity Z < wall front Z
+            : currentDepth > targetDepth; // Back/Right: entity Z > wall front Z
+
+          if (isBehind) {
+            // Snap depth to be in front of the wall
+            const depthOffset = vec3Mul(
+              targetCenter.clone().sub(entity.center),
+              absFwd,
+            );
+            entity.center.add(depthOffset);
+          }
+        }
       }
     }
 
@@ -324,8 +376,16 @@ export class PhysicsManager {
    * Separate from collision: collision handles movement blocking,
    * wall hugging handles depth-axis penetration prevention.
    *
-   * For each corner collision, check if the Surface or Deep trile
-   * would cause depth-axis penetration, and push the entity out.
+   * The camera-facing face of a trile is computed as:
+   *   trileCenter + trileHalfSize * (-forward)
+   * because -forward points FROM the scene TOWARD the camera.
+   *
+   * The entity edge that could penetrate is:
+   *   entity.center + entityHalfDepth * forward
+   * which is the edge pointing INTO the scene (away from camera).
+   *
+   * If the entity edge has gone past the trile's camera-facing face
+   * (into the trile), we push it back out.
    *
    * FEZ/Services/PhysicsManager.cs — HugWalls()
    */
@@ -337,11 +397,12 @@ export class PhysicsManager {
     let hugged = false;
 
     const fwd = forwardVector(this.viewpoint);
+    const negFwd = fwd.clone().negate(); // points toward camera
+    const absFwd = vec3Abs(fwd);
     const dMask = depthMask(this.viewpoint);
     const entityHalfDepth = vec3Mul(entity.size, dMask).multiplyScalar(0.5);
 
     for (const corner of entity.cornerCollision) {
-      // Check both Surface and Deep triles
       for (const instance of [
         corner.instances.surface,
         corner.instances.deep,
@@ -356,41 +417,39 @@ export class PhysicsManager {
         const trileHalfSize = getTransformedSize(instance, def)
           .multiplyScalar(0.5);
 
-        // Compute the face of the trile facing the camera
+        // Camera-facing face of the trile: center offset toward camera
+        // This is the face the player should be pushed in front of.
         const trileFacePoint = trileCenter
           .clone()
-          .sub(vec3Mul(trileHalfSize, fwd));
+          .add(vec3Mul(trileHalfSize, negFwd));
 
-        // Entity's depth-axis edge toward the trile
+        // Entity's scene-facing edge: the edge pointing away from camera
         const entityEdge = entity.center
           .clone()
           .add(vec3Mul(entityHalfDepth, fwd));
 
-        // Penetration: how far the entity has gone into the trile along depth
-        const penetration = entityEdge.clone().sub(trileFacePoint);
-        const penetrationDot = penetration.dot(fwd);
+        // Vector from the trile face to the entity edge, along depth axis
+        const diff = entityEdge.clone().sub(trileFacePoint);
+        // Project along forward: positive = entity is in front (no penetration)
+        //                        negative = entity has crossed through the face
+        const depthDot = diff.dot(negFwd);
 
-        if (penetrationDot < 0) {
-          // Entity is penetrating
+        if (depthDot < 0) {
+          // Entity edge is past the trile's camera face (penetrating)
 
           if (determineBackground) {
-            // Check if we're more than halfway through
             const totalSize =
-              vec3Mul(trileHalfSize, vec3Abs(fwd)).length() +
+              vec3Mul(trileHalfSize, absFwd).length() +
               entityHalfDepth.length();
-            if (Math.abs(penetrationDot) > totalSize) {
-              // Entity is behind this trile — mark as background
+            if (Math.abs(depthDot) > totalSize) {
               entity.background = true;
               return true;
             }
           }
 
           if (keepInFront) {
-            // Push entity out along depth axis
-            const pushback = vec3Mul(
-              penetration,
-              vec3Abs(fwd),
-            ).negate();
+            // Push entity toward camera so its edge is flush with the face
+            const pushback = vec3Mul(diff, absFwd).negate();
             entity.center.add(pushback);
             hugged = true;
           }
