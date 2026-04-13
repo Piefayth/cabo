@@ -1,11 +1,8 @@
 import * as THREE from "three";
 import {
   CollisionType,
-  FaceOrientation,
-  HorizontalDirection,
   VerticalDirection,
   QueryOptions,
-  faceGetOpposite,
   directionFromMovement,
 } from "./CollisionEnums";
 import { Viewpoint } from "./Viewpoint";
@@ -17,10 +14,7 @@ import {
   axisMask,
   vec3Mul,
   vec3Abs,
-  vec3Sign,
   almostClampVec3,
-  almostEqual,
-  almostEqualVec3,
   EPSILON,
   visibleOrientation,
 } from "./FezMath";
@@ -33,12 +27,9 @@ import {
 import {
   CollisionResult,
   MultipleHits,
-  NearestTriles,
-  PointCollision,
   anyCollided,
   multipleHitsFirst,
   emptyCollisionHits,
-  emptyNearestTriles,
   emptyInstanceHits,
 } from "../structure/CollisionStructures";
 import {
@@ -64,7 +55,6 @@ const WATER_FRICTION = new THREE.Vector3(0.925, 1, 0.925);
 const SLIDING_FRICTION = new THREE.Vector3(0.8, 1, 0.8);
 const FALLING_SPEED_LIMIT = 0.4; // Terminal velocity for complex entities
 const SIMPLE_SPEED_LIMIT = 0.38;
-const HUGGING_DISTANCE = 0.002;
 
 export class PhysicsManager {
   private collisionManager: CollisionManager;
@@ -157,7 +147,9 @@ export class PhysicsManager {
       }
     }
 
-    // 9. Update velocity, position, friction
+    // 9. Update velocity, position, friction.
+    // Note: updateInternal calls determineOverlaps at its end, so no need to
+    // call it again here.
     const moved = this.updateInternal(
       entity,
       horizontal,
@@ -168,9 +160,6 @@ export class PhysicsManager {
       false, // velocityIrrelevant
       false, // simple
     );
-
-    // 10. Determine overlaps (corner collision)
-    this.determineOverlaps(entity);
 
     return moved;
   }
