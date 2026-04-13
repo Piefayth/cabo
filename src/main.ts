@@ -8,6 +8,7 @@ import { PhysicsManager } from "./engine/PhysicsManager";
 import { PlayerManager } from "./components/PlayerManager";
 import { LevelRenderer } from "./rendering/LevelRenderer";
 import { TouchControls } from "./components/TouchControls";
+import { DebugHud } from "./components/DebugHud";
 import { createTestLevel } from "./structure/TestLevel";
 
 // --- Bootstrap ---
@@ -89,6 +90,9 @@ game.addComponent(cameraFollow);
 
 // --- Mobile touch controls ---
 new TouchControls(input);
+
+// --- Debug HUD ---
+new DebugHud(player, camera, input);
 
 // --- Resize handling ---
 window.addEventListener("resize", () => {

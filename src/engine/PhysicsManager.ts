@@ -56,11 +56,12 @@ import {
  * wall hugging (depth-axis pushing), ground clamping, and background transitions.
  */
 
-// FEZ physics constants (per-frame, at 60fps)
+// FEZ physics constants from PhysicsManager.cs
+// All friction vectors have Y=1 (no Y damping) — Y is handled by terminal velocity clamping only
 const GROUND_FRICTION = new THREE.Vector3(0.85, 1, 0.85);
-const AIR_FRICTION = 0.9975;
-const WATER_FRICTION = 0.925;
-const SLIDING_FRICTION = 0.8;
+const AIR_FRICTION = new THREE.Vector3(0.9975, 1, 0.9975);
+const WATER_FRICTION = new THREE.Vector3(0.925, 1, 0.925);
+const SLIDING_FRICTION = new THREE.Vector3(0.8, 1, 0.8);
 const FALLING_SPEED_LIMIT = 0.4; // Terminal velocity for complex entities
 const SIMPLE_SPEED_LIMIT = 0.38;
 const HUGGING_DISTANCE = 0.002;
@@ -264,15 +265,14 @@ export class PhysicsManager {
     const complex = entity as IComplexPhysicsEntity;
 
     if (isComplex && complex.swimming) {
-      friction = new THREE.Vector3(WATER_FRICTION, WATER_FRICTION, WATER_FRICTION);
+      friction = WATER_FRICTION.clone();
     } else if (entity.grounded) {
-      if (entity.sliding) {
-        friction = new THREE.Vector3(SLIDING_FRICTION, 1, SLIDING_FRICTION);
-      } else {
-        friction = GROUND_FRICTION.clone();
-      }
+      // FEZ uses ground friction for normal walking. SLIDING_FRICTION is
+      // reserved for the explicit sliding action (ice surfaces, etc.) — not
+      // applied merely because XZ velocity is nonzero.
+      friction = GROUND_FRICTION.clone();
     } else {
-      friction = new THREE.Vector3(AIR_FRICTION, AIR_FRICTION, AIR_FRICTION);
+      friction = AIR_FRICTION.clone();
     }
 
     // Friction amount interpolation based on gravity factor
