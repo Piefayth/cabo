@@ -10,15 +10,20 @@ import {
 } from "./CollisionEnums";
 import { Viewpoint } from "./Viewpoint";
 import {
-  forwardVector,
   rightVector,
   visibleOrientation,
   vec3Sign,
   vec3Abs,
   vec3Mul,
   almostEqual,
-  EPSILON,
 } from "./FezMath";
+
+/**
+ * FEZ PhysicsManager.HuggingDistance — used as a micro-clearance in
+ * HugWalls and here in horizontal edge probes to prevent false wall
+ * collisions at grid-boundary faces of ground blocks.
+ */
+const HUGGING_DISTANCE = 0.002;
 import { LevelManager } from "./LevelManager";
 import {
   TrileInstance,
@@ -183,10 +188,18 @@ export class CollisionManager {
     if (direction === Direction2D.Horizontal) {
       if (!isSimple) {
         // Test bottom edge: position + (sign + Down) * halfSize
+        // BUT inset Y by HUGGING_DISTANCE so the probe floats slightly
+        // above the player's feet. Without this inset the probe sits
+        // exactly on the top face of whatever ground block we're
+        // standing on, the fuzzy vertical neighbor lookup in
+        // offsetInstanceAt treats the NEXT ground block's side face
+        // as a wall, and horizontal motion stalls into an asymptote
+        // at every grid-cell boundary.
         const nearLowPos = position.clone().add(
-          vec3Mul(
-            new THREE.Vector3(sign.x, -1, sign.z),
-            halfSize,
+          new THREE.Vector3(
+            sign.x * halfSize.x,
+            -(halfSize.y - HUGGING_DISTANCE),
+            sign.z * halfSize.z,
           ),
         );
         result.nearLow = this.collidePoint(
@@ -198,10 +211,15 @@ export class CollisionManager {
         );
 
         // Test top edge: position + (sign + Up) * halfSize
+        // Inset Y downward by HUGGING_DISTANCE for the same reason
+        // (symmetric treatment, keeps ceiling-level blocks from being
+        // treated as walls when the head probe sits exactly at their
+        // bottom face).
         const farHighPos = position.clone().add(
-          vec3Mul(
-            new THREE.Vector3(sign.x, 1, sign.z),
-            halfSize,
+          new THREE.Vector3(
+            sign.x * halfSize.x,
+            halfSize.y - HUGGING_DISTANCE,
+            sign.z * halfSize.z,
           ),
         );
         result.farHigh = this.collidePoint(

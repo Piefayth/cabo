@@ -61,20 +61,21 @@ export function createTestLevel(): Level {
   }
 
   // ===================================================================
-  // MAIN GROUND — single depth z=4
-  // A wide platform the player starts on
+  // MAIN GROUND — single depth z=4, wider than before so there's
+  // plenty of open space to move around in.
   // ===================================================================
-  for (let x = -5; x <= 5; x++) {
+  for (let x = -10; x <= 14; x++) {
     place(x, 0, 4, 2);
     place(x, 1, 4, 1);
   }
 
   // ===================================================================
   // WALL — at z=4, same depth as ground. A real wall the player can see.
+  // Moved further left so it's not hugging the start position.
   // ===================================================================
   for (let y = 2; y <= 5; y++) {
-    place(-4, y, 4, 3);
-    place(-5, y, 4, 3);
+    place(-9, y, 4, 3);
+    place(-10, y, 4, 3);
   }
 
   // ===================================================================
@@ -82,32 +83,25 @@ export function createTestLevel(): Level {
   //
   // From Front view, these appear as ascending steps going right.
   // In 3D, each step is at a completely different z-depth.
-  // The player can walk up them because the collision system
-  // scans along the depth axis and finds them.
   //
-  //   Step 1 (y=3):  x=3..5   at z=4  (same as ground — reachable by walking)
-  //   Step 2 (y=5):  x=5..7   at z=8  (different depth!)
-  //   Step 3 (y=7):  x=7..9   at z=1  (yet another depth!)
-  //
-  // From Right/Left/Back views, they're clearly disconnected.
+  // CRITICAL: steps are placed at y ≥ 4 so they're ABOVE the player's
+  // head while walking (player head at y=2.9375). Walking under them
+  // is fine; to reach them the player jumps up onto the lowest one.
   // ===================================================================
 
-  // Step 1 — at z=4 (same as ground, walk right to reach it)
+  // Step 1 — at z=4 (same as ground), y=4 (above head, reachable by jump)
   for (let x = 3; x <= 5; x++) {
-    place(x, 2, 4, 4);
-    place(x, 3, 4, 4);
+    place(x, 4, 4, 4);
   }
 
-  // Step 2 — at z=8 (different depth! Only connects in Front view)
+  // Step 2 — at z=8 (different depth!)
   for (let x = 5; x <= 7; x++) {
-    place(x, 4, 8, 4);
-    place(x, 5, 8, 4);
+    place(x, 6, 8, 4);
   }
 
   // Step 3 — at z=1 (yet another depth!)
   for (let x = 7; x <= 9; x++) {
-    place(x, 6, 1, 5);
-    place(x, 7, 1, 5);
+    place(x, 8, 1, 5);
   }
 
   // ===================================================================
@@ -115,18 +109,18 @@ export function createTestLevel(): Level {
   // From Right view (camera at +X), these form steps going right.
   // In 3D they're at different x-depths.
   // ===================================================================
-  place(6, 3, 6, 4);
-  place(6, 3, 7, 4);
-  place(2, 5, 6, 4);
-  place(2, 5, 7, 4);
+  place(6, 5, 6, 4);
+  place(6, 5, 7, 4);
+  place(2, 7, 6, 4);
+  place(2, 7, 7, 4);
 
   // ===================================================================
   // TopOnly PLATFORMS — jump up through from below, land on top
   // ===================================================================
-  place(-1, 4, 4, 6);
-  place(0, 4, 4, 6);
-  place(-1, 7, 4, 6);
-  place(0, 7, 4, 6);
+  place(-1, 5, 4, 6);
+  place(0, 5, 4, 6);
+  place(-1, 9, 4, 6);
+  place(0, 9, 4, 6);
 
   // ===================================================================
   // FLOATING ISLAND — at z=10, visible from Front view as adjacent
