@@ -4,75 +4,53 @@ import { ServiceContainer } from "../core/ServiceContainer";
 import { Camera } from "../engine/Camera";
 import { InputManager } from "../engine/InputManager";
 import { PhysicsManager } from "../engine/PhysicsManager";
-import { Viewpoint } from "../engine/Viewpoint";
-import {
-  HorizontalDirection,
-  directionFromMovement,
-} from "../engine/CollisionEnums";
-import {
-  rightVector,
-} from "../engine/FezMath";
+import { CollisionManager } from "../engine/CollisionManager";
+import { LevelManager } from "../engine/LevelManager";
+import { HorizontalDirection } from "../engine/CollisionEnums";
+import { ActionType } from "../structure/ActionType";
 import {
   IComplexPhysicsEntity,
   createComplexPhysicsState,
 } from "../structure/PhysicsEntity";
 
-export enum ActionType {
-  Idle,
-  Walking,
-  Running,
-  Jumping,
-  Falling,
-  Landing,
-}
+import { PlayerAction } from "./actions/PlayerAction";
+import { PlayerContext, createPlayerContext } from "./actions/PlayerContext";
+import { Idle } from "./actions/Idle";
+import { WalkRun } from "./actions/WalkRun";
+import { Jump } from "./actions/Jump";
+import { Fall } from "./actions/Fall";
+import { Land } from "./actions/Land";
+import { Teeter } from "./actions/Teeter";
+import { Slide } from "./actions/Slide";
+import { ClimbLadder } from "./actions/ClimbLadder";
 
 /**
- * FEZ constants ported from the original source:
- *   - WalkAcceleration = 4.7   (WalkRun.cs static MovementHelper)
- *   - RunAcceleration  = 5.875
- *   - RunTimeThreshold = 0.2s
- *   - RunInputThreshold = 0.5
- *   - TrileSize = 0.15         (MovementHelper.cs / PhysicsManager.cs)
+ * PlayerManager — dispatches to a list of PlayerAction instances.
  *
- * Velocity impulse (per-tick, from MovementHelper.Update):
- *   velocity += rotate(input.x, 0, 0) * 0.15 * accel * dt
- *              * (0.5 + |gravityFactor|*1.5) / 2
+ * Mirrors FEZ/Services/PlayerManager.cs + the component architecture
+ * where each PlayerAction subclass is registered and the active one
+ * is selected each frame via isActionAllowed().
  *
- * Friction (PhysicsManager.UpdateInternal, applied every tick):
- *   velocity *= lerp(One, frictionVector, (1.2 + |gf|*0.8) / 2)
- *   ground friction (X,Z) = 0.85
- *
- * Equilibrium walking speed: 0.15 * 4.7 / (1 - 0.85) = 4.7 units/sec
+ * Per-frame flow (matches FEZ PlayerAction.Update):
+ *   for each action:  action.testConditions(ctx)  — may set entity.action
+ *   for each action:  if isActionAllowed(entity.action):
+ *                        on first frame of action: action.begin(ctx)
+ *                        action.act(ctx, dt)
+ *   run physics (collision + friction + integration)
  */
-const WALK_ACCELERATION = 4.7;
-const RUN_ACCELERATION = 5.875;
-const RUN_TIME_THRESHOLD = 0.2;
-const RUN_INPUT_THRESHOLD = 0.5;
-const TRILE_SIZE = 0.15;
-
-/** Gomez's actual collision size from FEZ PlayerManager.BaseSize */
 const PLAYER_SIZE = new THREE.Vector3(0.625, 0.9375, 1.0);
-
-/**
- * Jump and gravity tuning. FEZ's decompiled values aren't in the
- * sources we reviewed, but these give a platformer feel with the
- * FEZ terminal velocity of 0.4 units/frame (Y clamp in PhysicsManager).
- */
-const GRAVITY_PER_FRAME = 0.0135;
-const JUMP_VELOCITY = 0.22;
 
 export class PlayerManager extends BaseDrawableComponent {
   physics!: IComplexPhysicsEntity;
-
-  action = ActionType.Idle;
-  facingRight = true;
-  lookingDirection = HorizontalDirection.Right;
-  runTime = 0; // Seconds of sustained input above RUN_INPUT_THRESHOLD
+  ctx!: PlayerContext;
 
   private mesh!: THREE.Mesh;
   private camera!: Camera;
   private input!: InputManager;
   private physicsManager!: PhysicsManager;
+  private actions: PlayerAction[] = [];
+  /** Per-action last-frame active state (for begin/end lifecycle). */
+  private wasActive = new Map<PlayerAction, boolean>();
 
   private spawnPoint = new THREE.Vector3();
   private readonly KILL_FLOOR_Y = -20;
@@ -85,6 +63,8 @@ export class PlayerManager extends BaseDrawableComponent {
     camera: Camera,
     input: InputManager,
     physicsManager: PhysicsManager,
+    collisionManager: CollisionManager,
+    levelManager: LevelManager,
     startPosition: THREE.Vector3,
   ): void {
     this.camera = camera;
@@ -96,6 +76,32 @@ export class PlayerManager extends BaseDrawableComponent {
       startPosition.clone().add(new THREE.Vector3(0, PLAYER_SIZE.y / 2, 0)),
       PLAYER_SIZE,
     );
+
+    this.ctx = createPlayerContext(
+      this.physics,
+      input,
+      physicsManager,
+      collisionManager,
+      levelManager,
+      camera,
+    );
+
+    // Order matters: actions with transitions that should fire first
+    // come first (Jump before Fall so coyote-time jumps beat fall
+    // transitions).
+    // Order: tests that should win transitions go first. Climbing
+    // takes priority (suppresses normal walk/jump). Fall runs during
+    // Jumping too, so its act() always applies gravity when airborne.
+    this.actions = [
+      new ClimbLadder(),
+      new Land(),
+      new Jump(),
+      new Fall(),
+      new Slide(),
+      new Teeter(),
+      new WalkRun(),
+      new Idle(),
+    ];
 
     const geo = new THREE.BoxGeometry(
       PLAYER_SIZE.x,
@@ -113,102 +119,88 @@ export class PlayerManager extends BaseDrawableComponent {
       .sub(new THREE.Vector3(0, PLAYER_SIZE.y / 2, 0));
   }
 
-  get running(): boolean {
-    return this.runTime > RUN_TIME_THRESHOLD;
-  }
-
   update(dt: number): void {
     if (this.camera.isTransitioning) {
       this._updateMesh();
       return;
     }
 
-    const viewpoint = this.camera.viewpoint;
-    this.physicsManager.viewpoint = viewpoint;
+    this.physicsManager.viewpoint = this.camera.viewpoint;
 
-    const mx = this.input.state.movement.x;
-    const rv = rightVector(viewpoint);
-
-    // --- Running time accumulator (FEZ MovementHelper.Update) ---
-    if (Math.abs(mx) > RUN_INPUT_THRESHOLD) {
-      this.runTime += dt;
+    // Track airborne time for coyote-time jump grace.
+    if (this.physics.grounded) {
+      this.ctx.sinceNotGrounded = 0;
     } else {
-      this.runTime = 0;
+      this.ctx.sinceNotGrounded += dt;
     }
 
-    // --- Horizontal impulse (FEZ MovementHelper.Update) ---
-    // velocity += input * 0.15 * accel * dt * (0.5 + |gf|*1.5)/2
-    if (mx !== 0) {
-      const accel = this.running ? RUN_ACCELERATION : WALK_ACCELERATION;
-      const gf = Math.abs(this.physicsManager.gravityFactor);
-      const gravityScale = (0.5 + gf * 1.5) / 2;
-      const impulseMag = mx * TRILE_SIZE * accel * dt * gravityScale;
-      this.physics.velocity.add(rv.clone().multiplyScalar(impulseMag));
+    // 1. Test conditions across all actions (transitions fire here).
+    for (const a of this.actions) a.testConditions(this.ctx);
+
+    // Mirror ctx.action onto the entity so PhysicsManager can branch
+    // on it (e.g., SlidingFriction selection).
+    this.physics.action = this.ctx.action;
+
+    // 2. Run EVERY action whose isActionAllowed is true — matches FEZ's
+    //    PlayerAction.Update pattern where each action self-guards and
+    //    multiple actions can run in parallel (e.g., Fall applies gravity
+    //    during Jumping). Fire begin() / end() on activation transitions.
+    for (const a of this.actions) {
+      const isActive = a.isActionAllowed(this.ctx.action);
+      const wasActive = this.wasActive.get(a) ?? false;
+      if (isActive && !wasActive) a.begin(this.ctx);
+      if (!isActive && wasActive) a.end(this.ctx);
+      if (isActive) a.act(this.ctx, dt);
+      this.wasActive.set(a, isActive);
     }
 
-    // Facing direction
-    if (mx > 0.01) {
-      this.facingRight = true;
-      this.lookingDirection = HorizontalDirection.Right;
-    } else if (mx < -0.01) {
-      this.facingRight = false;
-      this.lookingDirection = HorizontalDirection.Left;
-    }
+    // Re-mirror in case act() changed ctx.action mid-frame.
+    this.physics.action = this.ctx.action;
 
-    // Tell physics which direction we're moving for edge probe orientation
-    this.physics.movingDirection = directionFromMovement(mx);
-
-    // --- Jump ---
-    if (this.input.state.jump.pressed && this.physics.grounded) {
-      this.physics.velocity.y = JUMP_VELOCITY;
-    }
-
-    // --- Gravity (applied per-frame like FEZ) ---
-    this.physics.velocity.y -= GRAVITY_PER_FRAME * this.physicsManager.gravityFactor;
-
-    // --- Physics update: collision, friction, position ---
+    // 3. Physics pass: collision, friction, integration.
     this.physicsManager.updateComplex(this.physics);
 
-    // --- Kill floor ---
+    // Kill floor
     if (this.physics.center.y < this.KILL_FLOOR_Y) {
       this.respawn();
       return;
     }
 
-    this._updateAction();
+    // Track lastAction for FEZ-style transitions.
+    if (this.ctx.lastAction !== this.ctx.action) {
+      this.ctx.lastAction = this.ctx.action;
+    }
+
     this._updateMesh();
   }
 
   respawn(): void {
-    this.physics.center.copy(this.spawnPoint).add(new THREE.Vector3(0, PLAYER_SIZE.y / 2, 0));
+    this.physics.center
+      .copy(this.spawnPoint)
+      .add(new THREE.Vector3(0, PLAYER_SIZE.y / 2, 0));
     this.physics.velocity.set(0, 0, 0);
     this.physics.groundMovement.set(0, 0, 0);
     this.physics.ground = { nearLow: null, farHigh: null };
     this.physics.background = false;
-    this.runTime = 0;
-    this.action = ActionType.Falling;
+    this.ctx.action = ActionType.Idle;
+    this.ctx.lastAction = ActionType.None;
+    this.ctx.runTime = 0;
+    this.ctx.sinceJumped = Infinity;
+    this.ctx.sinceNotGrounded = 0;
     this._updateMesh();
   }
 
-  private _updateAction(): void {
-    if (this.physics.grounded) {
-      const rv = rightVector(this.camera.viewpoint);
-      const horizSpeed = Math.abs(this.physics.velocity.dot(rv));
-      if (horizSpeed > 0.005) {
-        this.action = this.running ? ActionType.Running : ActionType.Walking;
-      } else {
-        this.action = ActionType.Idle;
-      }
-    } else {
-      this.action =
-        this.physics.velocity.y > 0 ? ActionType.Jumping : ActionType.Falling;
-    }
+  get action(): ActionType {
+    return this.ctx?.action ?? ActionType.Idle;
+  }
+
+  get facingRight(): boolean {
+    return this.ctx?.lookingDirection === HorizontalDirection.Right;
   }
 
   private _updateMesh(): void {
     this.mesh.position.copy(this.physics.center);
-
-    // Face the mesh toward the camera
+    // Face mesh toward camera
     const angle = Math.atan2(
       this.camera.camera.position.x - this.mesh.position.x,
       this.camera.camera.position.z - this.mesh.position.z,
@@ -218,6 +210,6 @@ export class PlayerManager extends BaseDrawableComponent {
   }
 
   draw(): void {
-    // Mesh is in the scene, Three.js handles rendering
+    // Mesh is in the scene; Three.js handles rendering.
   }
 }

@@ -38,6 +38,7 @@ import {
   getTransformedSize,
   getRotatedFace,
 } from "../structure/Trile";
+import { ActionType } from "../structure/ActionType";
 
 /**
  * PhysicsManager — the FEZ physics update loop.
@@ -204,10 +205,14 @@ export class PhysicsManager {
     if (isComplex && complex.swimming) {
       friction = WATER_FRICTION.clone();
     } else if (entity.grounded) {
-      // FEZ uses ground friction for normal walking. SLIDING_FRICTION is
-      // reserved for the explicit sliding action (ice surfaces, etc.) — not
-      // applied merely because XZ velocity is nonzero.
-      friction = GROUND_FRICTION.clone();
+      // FEZ selects SlidingFriction only when the player is in the
+      // explicit Sliding action (coast-to-stop state). Otherwise
+      // GroundFriction for walk/run/idle.
+      if (isComplex && complex.action === ActionType.Sliding) {
+        friction = SLIDING_FRICTION.clone();
+      } else {
+        friction = GROUND_FRICTION.clone();
+      }
     } else {
       friction = AIR_FRICTION.clone();
     }

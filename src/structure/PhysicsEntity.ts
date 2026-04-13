@@ -13,6 +13,7 @@ import {
   emptyNearestTriles,
 } from "./CollisionStructures";
 import { TrileInstance } from "./Trile";
+import { ActionType } from "./ActionType";
 
 /**
  * IPhysicsEntity — base interface for all physics objects.
@@ -48,6 +49,12 @@ export interface IComplexPhysicsEntity extends IPhysicsEntity {
   axisCollision: Map<VerticalDirection, NearestTriles>;
   ceiling: MultipleHits<CollisionResult>;
   handlesZClamping: boolean;
+  /** Current high-level action — used by PhysicsManager to pick the
+   *  friction vector (Sliding uses SlidingFriction). Maintained by
+   *  PlayerManager each frame from PlayerContext.action. */
+  action: ActionType;
+  /** FEZ PlayerManager.HeldInstance — ladder/vine/ledge we're holding. */
+  heldInstance: TrileInstance | null;
 }
 
 /**
@@ -96,5 +103,7 @@ export function createComplexPhysicsState(
     axisCollision,
     ceiling: emptyCollisionHits(),
     handlesZClamping: false,
+    action: ActionType.Idle,
+    heldInstance: null,
   };
 }

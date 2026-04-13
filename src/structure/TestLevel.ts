@@ -8,6 +8,7 @@ import {
   solidTrile,
   platformTrile,
   immaterialTrile,
+  ladderTrile,
 } from "./Trile";
 
 /**
@@ -31,10 +32,20 @@ export function createTestLevel(): Level {
   trileSet.set(5, solidTrile(5, "gold", 0xf1c40f));
   trileSet.set(6, platformTrile(6, "platform", 0xc0392b));
   trileSet.set(7, immaterialTrile(7, "decoration", 0x9b59b6));
+  // Ice — slippery ground. `unsafe` isn't the right FEZ concept but is
+  // what we have to flag a trile as slippery for the Slide action.
+  trileSet.set(8, solidTrile(8, "ice", 0x7fdbff));
+  trileSet.set(9, ladderTrile(9, "ladder", 0xd4a017));
 
   const triles = new Map<string, TrileInstance>();
 
-  function place(x: number, y: number, z: number, id: number): void {
+  function place(
+    x: number,
+    y: number,
+    z: number,
+    id: number,
+    opts: { unsafe?: boolean } = {},
+  ): void {
     const emp: TrileEmplacement = { x, y, z };
     triles.set(emplacementKey(emp), {
       position: new THREE.Vector3(x, y, z),
@@ -45,7 +56,7 @@ export function createTestLevel(): Level {
       physicsState: null,
       overlappedTriles: [],
       forceSeeThrough: false,
-      unsafe: false,
+      unsafe: opts.unsafe ?? false,
     });
   }
 
@@ -128,6 +139,25 @@ export function createTestLevel(): Level {
   // Small wall on island
   place(10, 2, 10, 3);
   place(10, 3, 10, 3);
+
+  // ===================================================================
+  // ICE PATCH — slippery ground at x=3..5 on main platform
+  // Triggers the Slide action; horizontal momentum carries you across.
+  // ===================================================================
+  // Overwrites the grass at those positions with ice marked unsafe.
+  place(3, 1, 4, 8, { unsafe: true });
+  place(4, 1, 4, 8, { unsafe: true });
+  place(5, 1, 4, 8, { unsafe: true });
+
+  // ===================================================================
+  // LADDER — climb up from main ground at x=-2
+  // ===================================================================
+  for (let y = 2; y <= 6; y++) {
+    place(-2, y, 4, 9);
+  }
+  // Small landing at the top of the ladder
+  place(-2, 7, 4, 3);
+  place(-1, 7, 4, 3);
 
   const level: Level = {
     name: "Test Level",

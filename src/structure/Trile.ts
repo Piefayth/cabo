@@ -19,6 +19,43 @@ import {
  * Each trile has collision faces per FaceOrientation, a size,
  * and flags for material behavior.
  */
+/**
+ * Actor types — mirrors FEZ ActorType enum (abbreviated). Determines
+ * how a trile participates in gameplay (climbing, bouncing, etc.).
+ */
+export enum ActorType {
+  None = 0,
+  Ladder,
+  Vine,
+  ClimbableNpc,
+  Sign,
+  Lesser,
+  Warp,
+  Pickup,
+  PickupNoRespawn,
+  Door,
+  BigDoor,
+  CodeMachine,
+  Telescope,
+  TreasureChest,
+  LoveStatue,
+  Bomb,
+  BombHolder,
+  HeavyBomb,
+  HeavyBombHolder,
+  CrumbleStepOn,
+  CrumbleSpawn,
+  KillBody,
+  BellBoarder,
+  PivotBlock,
+  Boarder,
+  Conveyor,
+  ConveyorWest,
+  ConveyorEast,
+  ConveyorUp,
+  ConveyorDown,
+}
+
 export interface TrileDefinition {
   id: number;
   name: string;
@@ -29,6 +66,8 @@ export interface TrileDefinition {
   offset: THREE.Vector3; // Center offset within the cell
   immaterial: boolean;
   thin: boolean; // Thin triles are see-through for depth queries
+  /** FEZ ActorSettings.Type — determines gameplay interaction */
+  actorType: ActorType;
 }
 
 /**
@@ -230,6 +269,7 @@ export function solidTrile(
   id: number,
   name: string,
   color: number,
+  actorType: ActorType = ActorType.None,
 ): TrileDefinition {
   const faces = new Map<FaceOrientation, CollisionType>();
   faces.set(FaceOrientation.Left, CollisionType.AllSides);
@@ -239,14 +279,12 @@ export function solidTrile(
   faces.set(FaceOrientation.Front, CollisionType.AllSides);
   faces.set(FaceOrientation.Back, CollisionType.AllSides);
   return {
-    id,
-    name,
-    color,
-    faces,
+    id, name, color, faces,
     size: new THREE.Vector3(1, 1, 1),
     offset: new THREE.Vector3(0, 0, 0),
     immaterial: false,
     thin: false,
+    actorType,
   };
 }
 
@@ -264,14 +302,12 @@ export function platformTrile(
   faces.set(FaceOrientation.Front, CollisionType.TopOnly);
   faces.set(FaceOrientation.Back, CollisionType.TopOnly);
   return {
-    id,
-    name,
-    color,
-    faces,
+    id, name, color, faces,
     size: new THREE.Vector3(1, 1, 1),
     offset: new THREE.Vector3(0, 0, 0),
     immaterial: false,
     thin: true,
+    actorType: ActorType.None,
   };
 }
 
@@ -280,19 +316,27 @@ export function immaterialTrile(
   id: number,
   name: string,
   color: number,
+  actorType: ActorType = ActorType.None,
 ): TrileDefinition {
   const faces = new Map<FaceOrientation, CollisionType>();
   for (let f = 0; f <= 5; f++) {
     faces.set(f as FaceOrientation, CollisionType.Immaterial);
   }
   return {
-    id,
-    name,
-    color,
-    faces,
+    id, name, color, faces,
     size: new THREE.Vector3(1, 1, 1),
     offset: new THREE.Vector3(0, 0, 0),
     immaterial: true,
     thin: false,
+    actorType,
   };
+}
+
+/** Create a ladder trile — immaterial but with ActorType.Ladder */
+export function ladderTrile(
+  id: number,
+  name: string,
+  color: number,
+): TrileDefinition {
+  return immaterialTrile(id, name, color, ActorType.Ladder);
 }

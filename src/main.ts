@@ -72,7 +72,14 @@ levelRenderer.buildFromLevel(level);
 
 // --- Player ---
 const player = new PlayerManager(game.services);
-player.initialize(camera, input, physicsManager, level.playerStart);
+player.initialize(
+  camera,
+  input,
+  physicsManager,
+  collisionManager,
+  levelManager,
+  level.playerStart,
+);
 game.addComponent(player);
 
 // Camera follows player
