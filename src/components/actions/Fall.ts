@@ -29,13 +29,43 @@ const TRILE_SIZE = 0.15;
 
 export class Fall extends PlayerAction {
   isActionAllowed(action: ActionType): boolean {
-    // Fall runs during Jumping too, so gravity decelerates the ascent.
-    // It does NOT run while climbing (ladder/vine suspend gravity).
-    return (
-      action === ActionType.Falling ||
-      action === ActionType.FreeFalling ||
-      action === ActionType.Jumping
-    );
+    // Gravity must apply nearly every frame — if it doesn't, velocity.y
+    // stays at 0, vertical impulse is 0, the collide-edge early-out in
+    // CollisionManager returns empty, and ground detection silently
+    // fails (player oscillates grounded/ungrounded).
+    // FEZ suspends gravity only while climbing, swimming, or inside
+    // pipes/tunnels/portals.
+    switch (action) {
+      case ActionType.FrontClimbingLadder:
+      case ActionType.BackClimbingLadder:
+      case ActionType.SideClimbingLadder:
+      case ActionType.ClimbingVine:
+      case ActionType.Swimming:
+      case ActionType.HurtSwim:
+      case ActionType.Treading:
+      case ActionType.FlyingThroughPipe:
+      case ActionType.EnteringPipe:
+      case ActionType.EnteringTunnel:
+      case ActionType.EnteringDoor:
+      case ActionType.ExitDoor:
+      case ActionType.GrabCornerLedge:
+      case ActionType.GrabLedgeFront:
+      case ActionType.GrabLedgeBack:
+      case ActionType.ShimmyFront:
+      case ActionType.ShimmyBack:
+      case ActionType.LowerToLedge:
+      case ActionType.LowerToCornerLedge:
+      case ActionType.CornerTransitionFront:
+      case ActionType.CornerTransitionBack:
+      case ActionType.FromCornerBack:
+      case ActionType.SuckedIn:
+      case ActionType.Dying:
+      case ActionType.GateWarp:
+      case ActionType.LesserWarp:
+        return false;
+      default:
+        return true;
+    }
   }
 
   testConditions(ctx: PlayerContext): void {
@@ -63,27 +93,28 @@ export class Fall extends PlayerAction {
     const e = ctx.entity;
     const gf = ctx.physicsManager.gravityFactor;
 
-    // --- Gravity ---
+    // --- Gravity (always) ---
+    // velocity.y -= Gravity * GravityFactor * TrileSize * dt
     e.velocity.y -= GRAVITY * gf * TRILE_SIZE * dt;
 
-    // --- Air control ---
-    const mx = ctx.input.state.movement.x;
-    if (mx !== 0) {
-      const rv = rightVector(ctx.camera.viewpoint);
-      const impulseMag =
-        mx * TRILE_SIZE * WALK_ACCEL_FOR_AIR * AIR_CONTROL * dt;
-      e.velocity.add(rv.clone().multiplyScalar(impulseMag));
-    }
+    // --- Air control (airborne only; WalkRun handles grounded input) ---
+    if (!e.grounded) {
+      const mx = ctx.input.state.movement.x;
+      if (mx !== 0) {
+        const rv = rightVector(ctx.camera.viewpoint);
+        const impulseMag =
+          mx * TRILE_SIZE * WALK_ACCEL_FOR_AIR * AIR_CONTROL * dt;
+        e.velocity.add(rv.clone().multiplyScalar(impulseMag));
+      }
 
-    // --- Horizontal speed clamp on X and Z independently (FEZ behaviour) ---
-    // FEZ clamps each horizontal axis separately so that inertia from a
-    // camera-axis change doesn't exceed MaxVelocity * TrileSize per-second.
-    const maxHoriz = MAX_VELOCITY * TRILE_SIZE;
-    if (Math.abs(e.velocity.x) > maxHoriz) {
-      e.velocity.x = Math.sign(e.velocity.x) * maxHoriz;
-    }
-    if (Math.abs(e.velocity.z) > maxHoriz) {
-      e.velocity.z = Math.sign(e.velocity.z) * maxHoriz;
+      // Horizontal speed clamp on X and Z independently (FEZ behaviour).
+      const maxHoriz = MAX_VELOCITY * TRILE_SIZE;
+      if (Math.abs(e.velocity.x) > maxHoriz) {
+        e.velocity.x = Math.sign(e.velocity.x) * maxHoriz;
+      }
+      if (Math.abs(e.velocity.z) > maxHoriz) {
+        e.velocity.z = Math.sign(e.velocity.z) * maxHoriz;
+      }
     }
 
     return true;
