@@ -157,58 +157,6 @@ export class PhysicsManager {
       }
     }
 
-    // 8b. Wall-contact depth clamping ("snap to front" behavior).
-    // In FEZ, when the player walks horizontally into a block at a different
-    // depth, they get depth-clamped to that block's camera-facing surface.
-    // This ensures the player walks ON the surface of geometry rather than
-    // being stopped by blocks at invisible depth positions.
-    if (entity.grounded && anyCollided(horizontal)) {
-      const wallHit = multipleHitsFirst(horizontal);
-      if (wallHit.destination) {
-        const wallDef = this.levelManager.trileSet.get(wallHit.destination.trileId);
-        if (wallDef) {
-          const wallCenter = getTrileCenter(wallHit.destination, wallDef);
-          const wallHalfSize = getTransformedSize(wallHit.destination, wallDef)
-            .multiplyScalar(0.5);
-
-          const fwd = forwardVector(this.viewpoint);
-          const negFwd = fwd.clone().negate();
-          const absFwd = vec3Abs(fwd);
-          const dMask = depthMask(this.viewpoint);
-          const entityHalfDepth = vec3Mul(entity.size, dMask).multiplyScalar(0.5);
-
-          // Camera-facing surface of the wall
-          const wallFrontFace = wallCenter.clone().add(vec3Mul(wallHalfSize, negFwd));
-
-          // Target depth: entity edge flush with wall's front face
-          // entityCenter + entityHalfDepth * forward = wallFrontFace
-          // entityCenter = wallFrontFace - entityHalfDepth * forward
-          const targetCenter = wallFrontFace.clone().sub(vec3Mul(entityHalfDepth, fwd));
-
-          // Only clamp the depth axis component
-          const currentDepth = entity.center.dot(absFwd);
-          const targetDepth = targetCenter.dot(absFwd);
-
-          // Only snap if the entity is actually behind the wall face (farther from camera)
-          // For negative forwardSign (Front/Left), "behind" means lower depth value
-          // For positive forwardSign (Back/Right), "behind" means higher depth value
-          const forwardSign = fwd.dot(absFwd); // sign of the depth axis in forward direction
-          const isBehind = forwardSign < 0
-            ? currentDepth < targetDepth // Front/Left: entity Z < wall front Z
-            : currentDepth > targetDepth; // Back/Right: entity Z > wall front Z
-
-          if (isBehind) {
-            // Snap depth to be in front of the wall
-            const depthOffset = vec3Mul(
-              targetCenter.clone().sub(entity.center),
-              absFwd,
-            );
-            entity.center.add(depthOffset);
-          }
-        }
-      }
-    }
-
     // 9. Update velocity, position, friction
     const moved = this.updateInternal(
       entity,
