@@ -14,13 +14,10 @@ import {
 /**
  * Test level demonstrating the FEZ perspective-shifting mechanic.
  *
- * KEY DESIGN RULE: Ground at any given screen-space position should be
- * at ONE depth only. NearestTrile scans front-to-back and returns the
- * camera-nearest solid block — ground at multiple depths causes the
- * player to depth-clamp unpredictably.
- *
- * The perspective trick uses platforms at DIFFERENT depths that only
- * APPEAR to connect when viewed from a specific angle.
+ * Ground spans BOTH X and Z so the player has walkable area regardless
+ * of camera orientation. Perspective-trick elements (platforms at
+ * different depths that align in 2D from one viewpoint) are layered on
+ * top of that base.
  */
 export function createTestLevel(): Level {
   const trileSet = new Map<number, TrileDefinition>();
@@ -32,10 +29,9 @@ export function createTestLevel(): Level {
   trileSet.set(5, solidTrile(5, "gold", 0xf1c40f));
   trileSet.set(6, platformTrile(6, "platform", 0xc0392b));
   trileSet.set(7, immaterialTrile(7, "decoration", 0x9b59b6));
-  // Ice — slippery ground. `unsafe` isn't the right FEZ concept but is
-  // what we have to flag a trile as slippery for the Slide action.
   trileSet.set(8, solidTrile(8, "ice", 0x7fdbff));
   trileSet.set(9, ladderTrile(9, "ladder", 0xd4a017));
+  trileSet.set(10, solidTrile(10, "brick", 0x9b3a3a));
 
   const triles = new Map<string, TrileInstance>();
 
@@ -61,101 +57,136 @@ export function createTestLevel(): Level {
   }
 
   // ===================================================================
-  // MAIN GROUND — single depth z=4, wider than before so there's
-  // plenty of open space to move around in.
+  // MAIN GROUND — a proper 2D walkable platform in the XZ plane.
+  // Spans both axes so the player has space to move regardless of
+  // which of the four orthographic views the camera is in.
   // ===================================================================
-  for (let x = -10; x <= 14; x++) {
-    place(x, 0, 4, 2);
-    place(x, 1, 4, 1);
+  const GROUND_X_MIN = -8;
+  const GROUND_X_MAX = 12;
+  const GROUND_Z_MIN = -2;
+  const GROUND_Z_MAX = 10;
+  for (let x = GROUND_X_MIN; x <= GROUND_X_MAX; x++) {
+    for (let z = GROUND_Z_MIN; z <= GROUND_Z_MAX; z++) {
+      place(x, 0, z, 2); // dirt
+      place(x, 1, z, 1); // grass
+    }
   }
 
   // ===================================================================
-  // WALL — at z=4, same depth as ground. A real wall the player can see.
-  // Moved further left so it's not hugging the start position.
+  // STONE WALL — a corner structure visible from two viewpoints.
+  //   From Front/Back: it's a wall extending in X at z=0 and z=1
+  //   From Right/Left: it's a wall extending in Z at x=-7 and x=-8
   // ===================================================================
+  // The wall sits at the back-left corner of the ground.
   for (let y = 2; y <= 5; y++) {
-    place(-9, y, 4, 3);
-    place(-10, y, 4, 3);
+    // Back wall slice (runs along X at z=0..1)
+    for (let x = -8; x <= -5; x++) {
+      place(x, y, 0, 3);
+      place(x, y, 1, 3);
+    }
+    // Left wall slice (runs along Z at x=-8..-7)
+    for (let z = 2; z <= 5; z++) {
+      place(-8, y, z, 3);
+      place(-7, y, z, 3);
+    }
   }
 
   // ===================================================================
-  // FEZ TRICK: PERSPECTIVE STAIRCASE (from FRONT view)
+  // FEZ PERSPECTIVE STAIRCASE (from FRONT view)
   //
-  // From Front view, these appear as ascending steps going right.
-  // In 3D, each step is at a completely different z-depth.
+  // Ascending steps that appear connected from Front view but are at
+  // completely different Z depths. Visible as 2D-aligned steps only
+  // when the camera is at Front (looking along -Z).
+  // ===================================================================
+  // Step 1 (lowest) — at z=4 (middle of ground)
+  place(3, 4, 4, 4);
+  place(4, 4, 4, 4);
+  place(5, 4, 4, 4);
+
+  // Step 2 — at z=9 (deeper into the scene)
+  place(5, 6, 9, 4);
+  place(6, 6, 9, 4);
+  place(7, 6, 9, 4);
+
+  // Step 3 — at z=-1 (closer to camera, "in front" of main ground)
+  place(7, 8, -1, 5);
+  place(8, 8, -1, 5);
+  place(9, 8, -1, 5);
+
+  // ===================================================================
+  // FEZ PERSPECTIVE STAIRCASE (from RIGHT view)
   //
-  // CRITICAL: steps are placed at y ≥ 4 so they're ABOVE the player's
-  // head while walking (player head at y=2.9375). Walking under them
-  // is fine; to reach them the player jumps up onto the lowest one.
+  // From the Right viewpoint (camera at +X looking -X), the depth axis
+  // becomes X. These platforms are at different X positions but align
+  // as a 2D staircase when viewed from the right.
   // ===================================================================
+  place(10, 3, -1, 4);
+  place(10, 3, 0, 4);
+  place(10, 3, 1, 4);
 
-  // Step 1 — at z=4 (same as ground), y=4 (above head, reachable by jump)
-  for (let x = 3; x <= 5; x++) {
-    place(x, 4, 4, 4);
-  }
+  place(4, 5, 3, 4);
+  place(4, 5, 4, 4);
+  place(4, 5, 5, 4);
 
-  // Step 2 — at z=8 (different depth!)
-  for (let x = 5; x <= 7; x++) {
-    place(x, 6, 8, 4);
-  }
-
-  // Step 3 — at z=1 (yet another depth!)
-  for (let x = 7; x <= 9; x++) {
-    place(x, 8, 1, 5);
-  }
+  place(-4, 7, 7, 5);
+  place(-4, 7, 8, 5);
+  place(-4, 7, 9, 5);
 
   // ===================================================================
-  // RIGHT VIEW PLATFORMS
-  // From Right view (camera at +X), these form steps going right.
-  // In 3D they're at different x-depths.
+  // TopOnly PLATFORMS — can jump up through from below
   // ===================================================================
-  place(6, 5, 6, 4);
-  place(6, 5, 7, 4);
-  place(2, 7, 6, 4);
-  place(2, 7, 7, 4);
-
-  // ===================================================================
-  // TopOnly PLATFORMS — jump up through from below, land on top
-  // ===================================================================
-  place(-1, 5, 4, 6);
   place(0, 5, 4, 6);
-  place(-1, 9, 4, 6);
-  place(0, 9, 4, 6);
+  place(1, 5, 4, 6);
+  place(0, 5, 5, 6);
+  place(1, 5, 5, 6);
 
   // ===================================================================
-  // FLOATING ISLAND — at z=10, visible from Front view as adjacent
-  // to main ground, but actually far away in depth
-  // ===================================================================
-  for (let x = 7; x <= 10; x++) {
-    place(x, 0, 10, 2);
-    place(x, 1, 10, 1);
-  }
-  // Small wall on island
-  place(10, 2, 10, 3);
-  place(10, 3, 10, 3);
-
-  // ===================================================================
-  // ICE PATCH — slippery ground at x=3..5 on main platform
-  // Triggers the Slide action; horizontal momentum carries you across.
-  // ===================================================================
-  // Overwrites the grass at those positions with ice marked unsafe.
-  place(3, 1, 4, 8, { unsafe: true });
-  place(4, 1, 4, 8, { unsafe: true });
-  place(5, 1, 4, 8, { unsafe: true });
-
-  // ===================================================================
-  // LADDER — climb up from main ground at x=-2
+  // LADDER — climb up from main ground
   // ===================================================================
   for (let y = 2; y <= 6; y++) {
     place(-2, y, 4, 9);
   }
-  // Small landing at the top of the ladder
+  // Small stone landing at the top of the ladder
   place(-2, 7, 4, 3);
   place(-1, 7, 4, 3);
+  place(-2, 7, 3, 3);
+  place(-1, 7, 3, 3);
+
+  // ===================================================================
+  // ICE PATCH — slippery ground zone (visual cue for future Sliding use)
+  // ===================================================================
+  place(6, 1, 7, 8, { unsafe: true });
+  place(7, 1, 7, 8, { unsafe: true });
+  place(6, 1, 8, 8, { unsafe: true });
+  place(7, 1, 8, 8, { unsafe: true });
+
+  // ===================================================================
+  // BRICK TOWER — structure visible from all sides with its own
+  // landing platforms. Deliberately standalone to give vertical
+  // interest independent of any specific viewpoint.
+  // ===================================================================
+  for (let y = 2; y <= 9; y++) {
+    place(11, y, 6, 10);
+    place(11, y, 7, 10);
+    place(12, y, 6, 10);
+    place(12, y, 7, 10);
+  }
+
+  // ===================================================================
+  // FLOATING ISLAND — offset from the main ground
+  //   From Front view, it appears adjacent (same screen-X as main)
+  //   From Right view, its distance in Z is obvious
+  // ===================================================================
+  for (let x = 8; x <= 11; x++) {
+    for (let z = 13; z <= 15; z++) {
+      place(x, 0, z, 2);
+      place(x, 1, z, 1);
+    }
+  }
 
   const level: Level = {
     name: "Test Level",
-    size: new THREE.Vector3(20, 16, 16),
+    size: new THREE.Vector3(24, 16, 20),
     trileSet,
     triles,
     playerStart: new THREE.Vector3(0.5, 2, 4),
