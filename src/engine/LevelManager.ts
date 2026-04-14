@@ -388,8 +388,13 @@ export class LevelManager {
    * Rebuild screen-space limits for a viewpoint.
    * FezEngine/Services/LevelManager.cs — FillScreenSpaceTile
    *
-   * For each screen-space tile (side, y), records the min/max depth
-   * coordinates where triles exist.
+   * For each screen-space tile (side, y), records the nearest-to-camera
+   * and farthest-from-camera depth coordinates where non-immaterial
+   * triles exist.
+   *
+   * Iterates over the ACTUAL trile positions rather than a fixed
+   * rectangle, so levels with negative coordinates (trile grid extending
+   * into x<0 or z<0) are handled correctly.
    */
   rebuildScreenSpaceLimits(viewpoint: Viewpoint): void {
     this.screenSpaceLimits.clear();
@@ -400,56 +405,39 @@ export class LevelManager {
     const fwd = forwardVector(viewpoint);
     const forwardSign = depthIsZ ? Math.sign(fwd.z) : Math.sign(fwd.x);
 
-    const maxSide = depthIsZ
-      ? Math.ceil(this.levelSize.x)
-      : Math.ceil(this.levelSize.z);
-    const maxY = Math.ceil(this.levelSize.y);
-    const maxDepth = depthIsZ
-      ? Math.ceil(this.levelSize.z)
-      : Math.ceil(this.levelSize.x);
+    // Walk every enabled, non-immaterial trile and accumulate its
+    // depth contribution into the appropriate screen-space tile.
+    for (const instance of this.triles.values()) {
+      if (!instance.enabled) continue;
+      const def = this.trileSet.get(instance.trileId);
+      if (!def || def.immaterial) continue;
 
-    for (let side = -1; side < maxSide + 1; side++) {
-      for (let y = -1; y < maxY + 1; y++) {
-        let foundStart: number | null = null;
-        let foundEnd: number | null = null;
+      const emp = instance.emplacement;
+      const side = depthIsZ ? emp.x : emp.z;
+      const depth = depthIsZ ? emp.z : emp.x;
+      const tileKey = `${side},${emp.y}`;
 
-        // Walk depth from near to far
-        const start = forwardSign > 0 ? 0 : maxDepth - 1;
-        const end = forwardSign > 0 ? maxDepth : -1;
-
-        for (
-          let d = start;
-          forwardSign > 0 ? d < end : d > end;
-          d += forwardSign
-        ) {
-          const emp: TrileEmplacement = depthIsZ
-            ? { x: side, y, z: d }
-            : { x: d, y, z: side };
-
-          const key = emplacementKey(emp);
-          const instance = this.triles.get(key);
-
-          if (instance && instance.enabled) {
-            const def = this.trileSet.get(instance.trileId);
-            if (def && !def.immaterial) {
-              if (foundStart === null) foundStart = d;
-              foundEnd = d;
-            }
-          }
-        }
-
-        if (foundStart !== null && foundEnd !== null) {
-          // Store with consistent ordering: start is always the camera-near side
-          const tileKey = `${side},${y}`;
-          this.screenSpaceLimits.set(tileKey, {
-            start: forwardSign > 0
-              ? Math.min(foundStart, foundEnd)
-              : Math.max(foundStart, foundEnd),
-            end: forwardSign > 0
-              ? Math.max(foundStart, foundEnd)
-              : Math.min(foundStart, foundEnd),
-            noOffset: true,
-          });
+      const existing = this.screenSpaceLimits.get(tileKey);
+      if (!existing) {
+        // First trile at this screen-space tile — start and end both
+        // point at this depth.
+        this.screenSpaceLimits.set(tileKey, {
+          start: depth,
+          end: depth,
+          noOffset: true,
+        });
+      } else {
+        // Widen the range.
+        // limit.start is always the camera-nearest depth; limit.end
+        // the camera-farthest. For forwardSign > 0 (Back/Right views
+        // looking along +Z or +X), camera-near is LOW depth value.
+        // For forwardSign < 0 (Front/Left), camera-near is HIGH depth.
+        if (forwardSign > 0) {
+          existing.start = Math.min(existing.start, depth);
+          existing.end = Math.max(existing.end, depth);
+        } else {
+          existing.start = Math.max(existing.start, depth);
+          existing.end = Math.min(existing.end, depth);
         }
       }
     }
