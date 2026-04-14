@@ -135,18 +135,16 @@ export function createTestLevel(): Level {
   }
 
   // ===================================================================
-  // BACKGROUND-LAYER DEMO COLUMN — thin vertical stack of
-  // fezGroundTriles at z=2, x=5..8, y=2..5 with a gap at (x=6..7, y=2..3).
-  // Because these use the FEZ convention, their visible side face is
-  // None (huggable). When you stand behind this column (z<2 side),
-  // determineInBackground should flag you as behind → magenta tint.
-  // Walking out from behind (to x<5 or x>8) clears the flag via
-  // determineInBackgroundLight.
+  // BACKGROUND-LAYER DEMO COLUMN — brick stack at z=2, x=5..8, y=2..5
+  // with a door-gap at (x=6..7, y=2..3). Uses solidTrile (AllSides) so
+  // the wall actually BLOCKS horizontal motion (not just walkthrough).
+  // AllSides is also huggable now, so approaching the wall snaps the
+  // player's depth to its camera-near face (emerge-in-front mechanic).
   // ===================================================================
   for (let y = 2; y <= 5; y++) {
     for (let x = 5; x <= 8; x++) {
       if (x >= 6 && x <= 7 && y <= 3) continue; // door gap
-      place(x, y, 2, 3); // stone, FEZ-convention
+      place(x, y, 2, 10); // brick, AllSides
     }
   }
 

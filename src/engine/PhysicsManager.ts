@@ -502,7 +502,14 @@ export class PhysicsManager {
       return false;
     }
 
-    // Check the visible face — AllSides triles are handled by main collision, not hugging
+    // Check the visible face. Huggable when non-Immaterial and
+    // non-TopNoStraightLedge. AllSides IS huggable — main collision
+    // handles the horizontal blocking, while the hug snaps the entity's
+    // depth to the face. Without AllSides being huggable, a player
+    // walking toward a solid wall at a different depth would phase
+    // through it depth-wise (wall blocks horizontally, but nothing
+    // aligns the player's Z with the wall's face, so on the next view
+    // rotation / movement they're still at their old depth).
     const face = visibleOrientation(this.viewpoint);
     const ct = getRotatedFace(
       face,
@@ -512,11 +519,9 @@ export class PhysicsManager {
       this.levelManager.trileSet,
     );
 
-    // Huggable if face is NOT one of: Immaterial, TopNoStraightLedge, AllSides
     return (
       ct !== CollisionType.Immaterial &&
-      ct !== CollisionType.TopNoStraightLedge &&
-      ct !== CollisionType.AllSides
+      ct !== CollisionType.TopNoStraightLedge
     );
   }
 

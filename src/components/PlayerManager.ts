@@ -215,11 +215,20 @@ export class PlayerManager extends BaseDrawableComponent {
 
   private _updateMesh(): void {
     this.mesh.position.copy(this.physics.center);
-    // Background-layer debug tint — visible cue that foreground/
-    // background classification is live.
+    // Background-layer debug tint — bright magenta with a strong
+    // emissive glow so it's obvious even in shadow. Reverts to plain
+    // white with no emissive when foreground.
     const mat = this.mesh.material as THREE.MeshStandardMaterial;
     if (mat) {
-      mat.color.setHex(this.physics.background ? 0xff66ff : 0xffffff);
+      if (this.physics.background) {
+        mat.color.setHex(0xff00ff);
+        mat.emissive.setHex(0x880088);
+        mat.emissiveIntensity = 1.0;
+      } else {
+        mat.color.setHex(0xffffff);
+        mat.emissive.setHex(0x000000);
+        mat.emissiveIntensity = 0;
+      }
     }
     // Face mesh toward camera
     const angle = Math.atan2(

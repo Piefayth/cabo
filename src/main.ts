@@ -19,12 +19,13 @@ const level = createTestLevel();
 // Sky
 scene.background = new THREE.Color(level.skyColor);
 
-// Lighting
-const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+// Lighting — brighter ambient + hemisphere so shadow sides are legible
+// instead of near-black.
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
 sun.position.set(10, 20, 10);
 scene.add(sun);
-scene.add(new THREE.AmbientLight(level.ambientColor, 0.6));
-scene.add(new THREE.HemisphereLight(0x87ceeb, 0x362d1b, 0.4));
+scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+scene.add(new THREE.HemisphereLight(0x87ceeb, 0x6a5a40, 0.9));
 
 // --- Engine systems ---
 const input = new InputManager(game.services);
