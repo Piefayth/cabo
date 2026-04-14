@@ -343,10 +343,20 @@ export function ladderTrile(
 
 /**
  * FEZ-convention GROUND trile (top layer of a ground stack).
- * Top face = TopOnly (you can land on it from above).
- * All other faces = None (side faces are see-through for collision,
- * so the trile is huggable and horizontal collision walks through it).
- * This is what most "walkable surface" triles in FEZ are configured as.
+ *
+ * TopOnly on every face. The key insight: `collideWithInstance` gates on
+ * the VISIBLE face (per viewpoint), and if that face is None the whole
+ * trile is skipped. Setting every face to TopOnly keeps the trile
+ * participating in collision from every viewpoint, but the TopOnly
+ * branch in collideWithInstance only fires when the collision normal
+ * points upward — so:
+ *   - Landing from above blocks (player stands on it)
+ *   - Horizontal probes (normal.y = 0) don't collide — walkthrough
+ *   - Bump from below (normal.y < 0) doesn't collide — jump-through
+ *
+ * Huggable in every viewpoint (TopOnly ≠ AllSides, ≠ Immaterial,
+ * ≠ TopNoStraightLedge), so participates in the background/foreground
+ * layer mechanic naturally.
  */
 export function fezGroundTrile(
   id: number,
@@ -354,12 +364,9 @@ export function fezGroundTrile(
   color: number,
 ): TrileDefinition {
   const faces = new Map<FaceOrientation, CollisionType>();
-  faces.set(FaceOrientation.Top, CollisionType.TopOnly);
-  faces.set(FaceOrientation.Down, CollisionType.None);
-  faces.set(FaceOrientation.Left, CollisionType.None);
-  faces.set(FaceOrientation.Right, CollisionType.None);
-  faces.set(FaceOrientation.Front, CollisionType.None);
-  faces.set(FaceOrientation.Back, CollisionType.None);
+  for (let f = 0; f <= 5; f++) {
+    faces.set(f as FaceOrientation, CollisionType.TopOnly);
+  }
   return {
     id, name, color, faces,
     size: new THREE.Vector3(1, 1, 1),
@@ -372,8 +379,13 @@ export function fezGroundTrile(
 
 /**
  * FEZ-convention INTERIOR trile (below the top layer of a ground stack).
- * All faces = None. Contributes visual geometry only — no collision
- * participation. Huggable because None ≠ AllSides.
+ *
+ * None on every face. Because collideWithInstance gates out None
+ * visible faces, interior triles participate in NO collision at all —
+ * they're purely visual filler under the walkable top layer.
+ *
+ * Huggable (None ≠ AllSides etc.), so still contributes to background-
+ * layer detection through corner probes.
  */
 export function fezInteriorTrile(
   id: number,
