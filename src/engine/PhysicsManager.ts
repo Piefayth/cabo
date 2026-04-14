@@ -149,40 +149,26 @@ export class PhysicsManager {
       }
     }
 
-    // 8a. Periodic background re-evaluation (FEZ calls this when the
-    // entity has ground movement, is climbing, or just finished a
-    // viewpoint transition). The rotation-completion path is wired
-    // via Camera.onRotate -> PlayerManager.onViewpointChanged.
+    // 8a. Periodic background re-evaluation.
+    // FEZ calls DetermineInBackground whenever entity has ground
+    // movement or is climbing. The method unconditionally clears
+    // entity.background, runs a HugWalls loop that both pushes the
+    // entity in-front-of huggable triles AND detects whether the
+    // entity is genuinely "behind" any of them, then re-sets
+    // entity.background from the detection result.
+    //
+    // The observable effect — "walk back toward a wall you were
+    // behind, end up in front of it" — falls out of this naturally:
+    // every ground-movement tick the foreground is the default, and
+    // next tick's CollideRectangle doesn't see foreground walls as
+    // colliders because the layer query filter excludes them while
+    // entity.background is false.
     if (
       entity.climbing ||
-      entity.groundMovement.lengthSq() > 1e-8
+      entity.groundMovement.lengthSq() > 1e-8 ||
+      wasGrounded
     ) {
       this.determineInBackground(entity);
-    }
-
-    // 8b. Foreground priority.
-    //
-    // When horizontal collision fires against a solid trile, ask
-    // whether there is ground IN FRONT of that trile at the player's
-    // screen-X position. If yes, this is the "emerge in foreground"
-    // moment — snap the player's depth axis to the foreground depth,
-    // clear the background flag, and cancel the horizontal collision
-    // (the player walks past the trile in the foreground layer).
-    // If no ground in front, the trile is a genuine wall and the
-    // horizontal response fires normally.
-    //
-    // This is the mechanism that makes the FEZ "walk back toward a
-    // wall you were behind, end up in front of it" behaviour feel
-    // automatic — every time the player's body overlaps a wall's
-    // screen-X, the foreground is checked first.
-    if (anyCollided(horizontal)) {
-      const didEmerge = this.tryEmergeToForeground(entity, horizontal);
-      if (didEmerge) {
-        // Clear horizontal so updateInternal doesn't apply the wall
-        // response and so wallCollision reports clean.
-        horizontal.nearLow = emptyCollisionResult();
-        horizontal.farHigh = emptyCollisionResult();
-      }
     }
 
     // 9. Update velocity, position, friction.
@@ -200,114 +186,6 @@ export class PhysicsManager {
     );
 
     return moved;
-  }
-
-  /**
-   * tryEmergeToForeground — foreground-priority depth snap.
-   *
-   * On a horizontal collision, probes for ground at the depth just in
-   * front of the collided trile (i.e., between the trile's camera-facing
-   * face and the camera). If ground exists there:
-   *   - Snap entity's depth axis to the foreground ground depth
-   *   - Clear entity.background
-   *   - Return true (caller should cancel the horizontal collision)
-   *
-   * If no ground in front (it's a genuine wall), return false.
-   */
-  private tryEmergeToForeground(
-    entity: IComplexPhysicsEntity,
-    horizontal: MultipleHits<CollisionResult>,
-  ): boolean {
-    const wallHit = multipleHitsFirst(horizontal);
-    const wall = wallHit.destination;
-    if (!wall) return false;
-
-    const wallDef = this.levelManager.trileSet.get(wall.trileId);
-    if (!wallDef) return false;
-
-    const fwd = forwardVector(this.viewpoint);
-    const negFwd = fwd.clone().negate();
-    const absFwd = vec3Abs(fwd);
-    const dMask = depthMask(this.viewpoint);
-    const invDMask = new THREE.Vector3(1, 1, 1).sub(dMask);
-
-    // Camera-facing face of the wall
-    const wallCenter = getTrileCenter(wall, wallDef);
-    const wallHalfSize = getTransformedSize(wall, wallDef).multiplyScalar(0.5);
-    const wallFrontFace = wallCenter.clone().add(vec3Mul(wallHalfSize, negFwd));
-
-    // Where the entity's center would sit if its depth-back edge were
-    // flush with the wall's camera face: center = face + halfDepth * (-fwd)
-    const entityHalfDepth = vec3Mul(entity.size, dMask).multiplyScalar(0.5);
-    const targetCenter = wallFrontFace.clone().add(
-      vec3Mul(entityHalfDepth, negFwd),
-    );
-
-    // Probe for ground under that target center.
-    // For Front viewpoint: probe at (targetCenter.x, entity.center.y - halfSize.y - eps, targetCenter.z).
-    // We use actualInstanceAt — exact grid lookup, no fuzzy scan —
-    // because we want a specific ground block at the foreground depth.
-    const halfHeight = entity.size.y * 0.5;
-    const probe = new THREE.Vector3(
-      targetCenter.x,
-      entity.center.y - halfHeight - 0.01,
-      targetCenter.z,
-    );
-    // targetCenter only has the depth component set; replace X/Z screen-space
-    // components with the entity's current values so the probe is at the
-    // entity's actual X/Y but the target depth.
-    const mixed = vec3Mul(entity.center, invDMask).add(
-      vec3Mul(targetCenter, dMask),
-    );
-    probe.x = mixed.x;
-    probe.y = entity.center.y - halfHeight - 0.01;
-    probe.z = mixed.z;
-
-    const ground = this.levelManager.actualInstanceAt(probe);
-    if (!ground || !ground.enabled) return false;
-
-    const groundDef = this.levelManager.trileSet.get(ground.trileId);
-    if (!groundDef) return false;
-
-    // Ground must actually have a solid top face.
-    const topFace = groundDef.faces.get(/* FaceOrientation.Top = */ 4);
-    if (topFace === CollisionType.None || topFace === CollisionType.Immaterial) {
-      return false;
-    }
-
-    // Confirmed: there's a ground block in the foreground. Snap depth.
-    // Only modify the depth-axis component of entity.center.
-    const currentDepth = entity.center.dot(absFwd);
-    const targetDepth = mixed.dot(absFwd);
-    // Don't snap if we're already in front (or at the same depth).
-    // "In front" means closer to the camera than the wall's face, which
-    // corresponds to currentDepth being farther along -fwd than targetDepth.
-    // For Front (fwd = -Z), negFwd = +Z; currentDepth is entity.center.z.
-    // targetDepth is where we want the entity.center's z to be.
-    // If currentDepth is already >= targetDepth along negFwd, we're already
-    // in front — no snap needed.
-    const currentAlongNegFwd = entity.center.dot(negFwd);
-    const targetAlongNegFwd = mixed.dot(negFwd);
-    if (currentAlongNegFwd >= targetAlongNegFwd) {
-      // Already in front — cancel the collision (the wall we hit is
-      // actually behind us from the camera's view; it shouldn't block).
-      entity.background = false;
-      return true;
-    }
-
-    // Snap depth-axis only
-    entity.center = vec3Mul(entity.center, invDMask).add(
-      vec3Mul(mixed, dMask),
-    );
-    entity.background = false;
-    // Zero any residual depth-axis velocity since we just teleported.
-    const velDepth = entity.velocity.dot(absFwd);
-    entity.velocity.sub(
-      absFwd.clone().multiplyScalar(velDepth),
-    );
-    void currentDepth;
-    void targetDepth;
-    return true;
   }
 
   /**
