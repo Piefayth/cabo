@@ -135,16 +135,39 @@ export function createTestLevel(): Level {
   }
 
   // ===================================================================
-  // BACKGROUND-LAYER DEMO COLUMN — brick stack at z=2, x=5..8, y=2..5
-  // with a door-gap at (x=6..7, y=2..3). Uses solidTrile (AllSides) so
-  // the wall actually BLOCKS horizontal motion (not just walkthrough).
-  // AllSides is also huggable now, so approaching the wall snaps the
-  // player's depth to its camera-near face (emerge-in-front mechanic).
+  // BACKGROUND-LAYER DEMO — TWO PILLARS for side-by-side testing.
+  //
+  // BRICK PILLAR (AllSides) at z=2, x=5..8, y=2..5, gap at (x=6..7, y=2..3).
+  //   Horizontal collision blocks (AllSides). Huggable under the new
+  //   rule so approaching it also snaps your depth to its camera face.
+  //   Expect: you cannot walk through, and as you approach your Z
+  //   snaps to the pillar's near face (z=2.5 in Front view).
+  //
+  // STONE PILLAR (TopOnly, fezGroundTrile) at z=6, x=-6..-3, y=2..5,
+  // gap at (x=-5..-4, y=2..3).
+  //   Horizontal collision does NOT block (TopOnly only blocks from
+  //   above). Still huggable (not AllSides) so the depth snap fires.
+  //   Expect: you CAN walk through the pillar's screen-X range, but
+  //   your Z snaps to its near face while you do. No tunneling in
+  //   the depth sense — just horizontal passage.
+  //
+  // Having both side-by-side isolates whether the depth-snap + layer
+  // mechanic works independently of the horizontal-block.
   // ===================================================================
+
+  // Brick pillar (AllSides, blocks)
   for (let y = 2; y <= 5; y++) {
     for (let x = 5; x <= 8; x++) {
       if (x >= 6 && x <= 7 && y <= 3) continue; // door gap
-      place(x, y, 2, 10); // brick, AllSides
+      place(x, y, 2, 10); // brick
+    }
+  }
+
+  // Stone pillar (TopOnly, doesn't block horizontal but huggable)
+  for (let y = 2; y <= 5; y++) {
+    for (let x = -6; x <= -3; x++) {
+      if (x >= -5 && x <= -4 && y <= 3) continue; // door gap
+      place(x, y, 6, 3); // stone, fezGroundTrile
     }
   }
 
