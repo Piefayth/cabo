@@ -273,22 +273,28 @@ export class PhysicsManager {
       this.clampToGround(entity, clampToGround);
     }
 
-    // Wall hugging (depth-axis pushing) — keep the entity's edge flush
-    // with the camera-facing face of any huggable trile it's overlapping
-    // along the depth axis. Return value discarded — no entry into
-    // background from here, only the pushback.
+    // Refresh corner probes at the newly-integrated position BEFORE
+    // running hugWalls. hugWalls consumes entity.cornerCollision;
+    // if we don't refresh first it would use stale corners from the
+    // previous frame's position and miss depth-penetration that only
+    // appears at the new center.
+    this.determineOverlaps(entity);
+
+    // Wall hugging (depth-axis pushback) — pushes the entity toward the
+    // camera so its scene-facing edge is flush with any huggable trile's
+    // camera-facing face. This is the mechanism that produces the
+    // "emerge in front when walking back over a wall you were behind"
+    // behaviour: once the light variant clears entity.background, the
+    // next frame's horizontal walk back into the wall's screen-X range
+    // finds the wall as huggable in foreground mode and gets pushed
+    // along the depth axis to its front face.
     if (hugWalls && !simple) {
       this.hugWalls(entity, false, true);
     }
 
-    // Redefine corners now that position has settled.
-    this.determineOverlaps(entity);
-
-    // Light background re-evaluation: if the entity is currently in the
-    // background but none of its refreshed corners see a huggable trile
-    // anymore, clear the background flag. This is the automatic
-    // foreground-return path that doesn't require a rotation or
-    // moving-platform trigger.
+    // Light background re-evaluation — clears entity.background if none
+    // of the corner probes still see a huggable trile. The automatic
+    // foreground-return path.
     if (hugWalls && !simple && "climbing" in entity) {
       this.determineInBackgroundLight(entity as IComplexPhysicsEntity);
     }
