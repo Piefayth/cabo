@@ -149,24 +149,20 @@ export class PhysicsManager {
       }
     }
 
-    // 8a. Periodic background re-evaluation.
-    // FEZ calls DetermineInBackground whenever entity has ground
-    // movement or is climbing. The method unconditionally clears
-    // entity.background, runs a HugWalls loop that both pushes the
-    // entity in-front-of huggable triles AND detects whether the
-    // entity is genuinely "behind" any of them, then re-sets
-    // entity.background from the detection result.
+    // 8a. Full layer re-evaluation when the entity has inherited
+    // motion from the ground or is climbing. This is the FEZ gate
+    // (GroundMovement != Zero || Climbing). The method
+    // unconditionally clears entity.background, loops hugWalls until
+    // no more pushing, and re-sets entity.background if any iteration
+    // detected deep penetration into a huggable trile.
     //
-    // The observable effect — "walk back toward a wall you were
-    // behind, end up in front of it" — falls out of this naturally:
-    // every ground-movement tick the foreground is the default, and
-    // next tick's CollideRectangle doesn't see foreground walls as
-    // colliders because the layer query filter excludes them while
-    // entity.background is false.
+    // The "emerge in front when walking back" behaviour comes from
+    // the LIGHT variant inside updateInternal — it runs every frame
+    // and clears entity.background as soon as the refreshed corner
+    // probes stop seeing huggable triles.
     if (
       entity.climbing ||
-      entity.groundMovement.lengthSq() > 1e-8 ||
-      wasGrounded
+      entity.groundMovement.lengthSq() > 1e-8
     ) {
       this.determineInBackground(entity);
     }
@@ -277,13 +273,25 @@ export class PhysicsManager {
       this.clampToGround(entity, clampToGround);
     }
 
-    // Wall hugging (depth-axis pushing)
+    // Wall hugging (depth-axis pushing) — keep the entity's edge flush
+    // with the camera-facing face of any huggable trile it's overlapping
+    // along the depth axis. Return value discarded — no entry into
+    // background from here, only the pushback.
     if (hugWalls && !simple) {
       this.hugWalls(entity, false, true);
     }
 
-    // Redefine corners
+    // Redefine corners now that position has settled.
     this.determineOverlaps(entity);
+
+    // Light background re-evaluation: if the entity is currently in the
+    // background but none of its refreshed corners see a huggable trile
+    // anymore, clear the background flag. This is the automatic
+    // foreground-return path that doesn't require a rotation or
+    // moving-platform trigger.
+    if (hugWalls && !simple && "climbing" in entity) {
+      this.determineInBackgroundLight(entity as IComplexPhysicsEntity);
+    }
 
     return totalVelocity.lengthSq() > 1e-12;
   }
@@ -349,8 +357,11 @@ export class PhysicsManager {
    *   entity.center + entityHalfDepth * forward
    * which is the edge pointing INTO the scene (away from camera).
    *
-   * If the entity edge has gone past the trile's camera-facing face
-   * (into the trile), we push it back out.
+   * Returns both flags; never writes entity.background directly — the
+   * caller (determineInBackground) owns that write so the loop pattern
+   * works correctly. Setting entity.background from inside this method
+   * would short-circuit the loop-until-not-hugged semantics FEZ relies
+   * on.
    *
    * FEZ/Services/PhysicsManager.cs — HugWalls()
    */
@@ -358,11 +369,22 @@ export class PhysicsManager {
     entity: IPhysicsEntity,
     determineBackground: boolean,
     keepInFront: boolean,
-  ): boolean {
+  ): { hugged: boolean; isBehind: boolean } {
     let hugged = false;
+    let isBehind = false;
 
-    const fwd = forwardVector(this.viewpoint);
-    const negFwd = fwd.clone().negate(); // points toward camera
+    // When the entity is ALREADY in the background layer, FEZ flips
+    // the forward vector so pushback/detection is measured from the
+    // opposite side of triles. Grounded entities already in background
+    // skip hugWalls entirely — the ground-clamp keeps them put.
+    const inBg = entity.background;
+    if (inBg && entity.grounded) {
+      return { hugged, isBehind };
+    }
+    const fwd = inBg
+      ? forwardVector(this.viewpoint).negate()
+      : forwardVector(this.viewpoint);
+    const negFwd = fwd.clone().negate(); // points "toward camera" from the entity's layer perspective
     const absFwd = vec3Abs(fwd);
     const dMask = depthMask(this.viewpoint);
     const entityHalfDepth = vec3Mul(entity.size, dMask).multiplyScalar(0.5);
@@ -382,38 +404,36 @@ export class PhysicsManager {
         const trileHalfSize = getTransformedSize(instance, def)
           .multiplyScalar(0.5);
 
-        // Camera-facing face of the trile: center offset toward camera
-        // This is the face the player should be pushed in front of.
+        // Camera-facing face of the trile (relative to current layer).
         const trileFacePoint = trileCenter
           .clone()
           .add(vec3Mul(trileHalfSize, negFwd));
 
-        // Entity's scene-facing edge: the edge pointing away from camera
+        // Entity's scene-facing edge.
         const entityEdge = entity.center
           .clone()
           .add(vec3Mul(entityHalfDepth, fwd));
 
-        // Vector from the trile face to the entity edge, along depth axis
         const diff = entityEdge.clone().sub(trileFacePoint);
-        // Project along forward: positive = entity is in front (no penetration)
-        //                        negative = entity has crossed through the face
         const depthDot = diff.dot(negFwd);
 
         if (depthDot < 0) {
-          // Entity edge is past the trile's camera face (penetrating)
-
+          // Entity edge is past the trile's camera face.
+          // FEZ pattern: determineBackground-and-deep OR keepInFront — NOT BOTH.
+          // If deep enough to count as Behind, skip pushback this iteration.
+          // Otherwise push back when keepInFront.
+          let markedBehind = false;
           if (determineBackground) {
             const totalSize =
               vec3Mul(trileHalfSize, absFwd).length() +
               entityHalfDepth.length();
             if (Math.abs(depthDot) > totalSize) {
-              entity.background = true;
-              return true;
+              isBehind = true;
+              markedBehind = true;
             }
           }
 
-          if (keepInFront) {
-            // Push entity toward camera so its edge is flush with the face
+          if (!markedBehind && keepInFront) {
             const pushback = vec3Mul(diff, absFwd).negate();
             entity.center.add(pushback);
             hugged = true;
@@ -422,7 +442,7 @@ export class PhysicsManager {
       }
     }
 
-    return hugged;
+    return { hugged, isBehind };
   }
 
   /**
@@ -531,22 +551,89 @@ export class PhysicsManager {
   }
 
   /**
-   * DetermineInBackground — check if entity should transition to background layer.
+   * DetermineInBackground — full layer re-evaluation.
+   *
+   * The FEZ pattern (per audit against the decompiled PhysicsManager):
+   *   1. Unconditionally clear entity.background.
+   *   2. Loop: determineOverlaps + hugWalls(determineBackground=true,
+   *      keepInFront=true). Each iteration pushes the entity toward the
+   *      camera away from huggable triles and records whether the
+   *      entity's penetration was deep enough to count as "behind".
+   *      Keep looping until no more pushing happens.
+   *   3. Set entity.background = (any iteration detected isBehind).
+   *   4. If now in background, re-sample overlaps with the background
+   *      query flag so subsequent callers see the correct trile set.
+   *
+   * The observable behaviour ("walk back toward a wall, emerge in
+   * front") falls out of this default-to-foreground pattern: next
+   * tick's CollideRectangle runs with the layer filter derived from
+   * entity.background, and foreground walls simply aren't seen as
+   * colliders when the player is in the foreground layer.
    *
    * FEZ/Services/PhysicsManager.cs — DetermineInBackground()
    */
   determineInBackground(entity: IComplexPhysicsEntity): void {
     entity.background = false;
 
-    // Determine overlaps and hug walls with background detection
-    this.determineOverlaps(entity);
-    const isBehind = this.hugWalls(entity, true, false);
+    // keepInFront is `!climbing` per FEZ — while climbing we don't
+    // push the entity out of huggable triles (climbing states carry
+    // their own position management).
+    const keepInFront = !entity.climbing;
 
-    if (isBehind) {
-      entity.background = true;
-      // Re-determine with background flag
+    // Loop: determineOverlaps + hugWalls(determineBackground=true).
+    // Each iteration that pushes back with keepInFront sets `hugged`;
+    // the loop exits when no more pushback happens. We take only the
+    // FINAL iteration's isBehind — FEZ's settled-position result.
+    let result: { hugged: boolean; isBehind: boolean } = {
+      hugged: false,
+      isBehind: false,
+    };
+    let iterations = 0;
+    const MAX_ITERATIONS = 8; // safety cap — normal case resolves in 1–2
+    for (;;) {
       this.determineOverlaps(entity);
-      this.hugWalls(entity, false, true);
+      result = this.hugWalls(entity, true, keepInFront);
+      if (!result.hugged) break;
+      if (++iterations >= MAX_ITERATIONS) break;
     }
+
+    entity.background = result.isBehind;
+
+    // Final pushback pass: re-sample overlaps with the now-correct
+    // background flag and run hugWalls one more time with
+    // determineBackground=false so any settling uses pure pushback
+    // semantics against the correct layer's trile set.
+    this.determineOverlaps(entity);
+    this.hugWalls(entity, false, keepInFront);
+  }
+
+  /**
+   * DetermineInBackgroundLight — the allowEnterInBackground=false variant.
+   *
+   * FEZ's UpdateInternal calls this every frame. It only CLEARS
+   * entity.background when no corner has a huggable instance — i.e.,
+   * the entity is no longer overlapping any background-suitable trile
+   * and should return to the foreground layer. It never sets
+   * entity.background to true.
+   *
+   * This is the mechanism that "ushers the player back to foreground"
+   * once they've walked out from behind the wall without needing a
+   * rotation or moving platform to trigger the full re-evaluation.
+   */
+  private determineInBackgroundLight(entity: IComplexPhysicsEntity): void {
+    if (!entity.background) return; // already foreground — nothing to do
+
+    // If any corner probe still sees a huggable trile, we're still
+    // validly in the background.
+    for (const corner of entity.cornerCollision) {
+      for (const inst of [corner.instances.surface, corner.instances.deep]) {
+        if (inst && this.isHuggable(inst, entity)) {
+          return;
+        }
+      }
+    }
+
+    // No huggable triles — return to foreground.
+    entity.background = false;
   }
 }

@@ -184,6 +184,35 @@ export function createTestLevel(): Level {
     }
   }
 
+  // ===================================================================
+  // BACKGROUND-LAYER TEST: wall-with-gap
+  //
+  // A brick wall at z=2 that runs across x=5..8, y=2..5, with a
+  // pass-through gap at x=6..7 y=2..3. Ground behind the wall
+  // (z=0..1, which is deeper into the scene from Front view) lets the
+  // player stand back there.
+  //
+  // How to exercise the mechanic from Front view:
+  //   1. From main ground (z=4..10 area), walk through the gap
+  //      (x=6 or 7, through the z=2 wall slice) by dropping down into
+  //      z=1 or z=0. You should be rendered MAGENTA (background).
+  //   2. Walk out from behind horizontally (to x < 5 or x > 8).
+  //      Player should flip back to WHITE (foreground) as soon as no
+  //      corner sees a huggable trile (determineInBackgroundLight in
+  //      updateInternal).
+  //   3. Walk back toward the wall's X range. Because background=false
+  //      by the time you overlap the wall's screen-X, the layer query
+  //      filter excludes the wall as a collider. You emerge in front
+  //      of the wall at your current z, not back behind it.
+  // ===================================================================
+  for (let y = 2; y <= 5; y++) {
+    for (let x = 5; x <= 8; x++) {
+      // Skip the gap at x=6..7, y=2..3
+      if (x >= 6 && x <= 7 && y <= 3) continue;
+      place(x, y, 2, 10);
+    }
+  }
+
   const level: Level = {
     name: "Test Level",
     size: new THREE.Vector3(24, 16, 20),
