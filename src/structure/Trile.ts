@@ -340,3 +340,56 @@ export function ladderTrile(
 ): TrileDefinition {
   return immaterialTrile(id, name, color, ActorType.Ladder);
 }
+
+/**
+ * FEZ-convention GROUND trile (top layer of a ground stack).
+ * Top face = TopOnly (you can land on it from above).
+ * All other faces = None (side faces are see-through for collision,
+ * so the trile is huggable and horizontal collision walks through it).
+ * This is what most "walkable surface" triles in FEZ are configured as.
+ */
+export function fezGroundTrile(
+  id: number,
+  name: string,
+  color: number,
+): TrileDefinition {
+  const faces = new Map<FaceOrientation, CollisionType>();
+  faces.set(FaceOrientation.Top, CollisionType.TopOnly);
+  faces.set(FaceOrientation.Down, CollisionType.None);
+  faces.set(FaceOrientation.Left, CollisionType.None);
+  faces.set(FaceOrientation.Right, CollisionType.None);
+  faces.set(FaceOrientation.Front, CollisionType.None);
+  faces.set(FaceOrientation.Back, CollisionType.None);
+  return {
+    id, name, color, faces,
+    size: new THREE.Vector3(1, 1, 1),
+    offset: new THREE.Vector3(0, 0, 0),
+    immaterial: false,
+    thin: false,
+    actorType: ActorType.None,
+  };
+}
+
+/**
+ * FEZ-convention INTERIOR trile (below the top layer of a ground stack).
+ * All faces = None. Contributes visual geometry only — no collision
+ * participation. Huggable because None ≠ AllSides.
+ */
+export function fezInteriorTrile(
+  id: number,
+  name: string,
+  color: number,
+): TrileDefinition {
+  const faces = new Map<FaceOrientation, CollisionType>();
+  for (let f = 0; f <= 5; f++) {
+    faces.set(f as FaceOrientation, CollisionType.None);
+  }
+  return {
+    id, name, color, faces,
+    size: new THREE.Vector3(1, 1, 1),
+    offset: new THREE.Vector3(0, 0, 0),
+    immaterial: false,
+    thin: false,
+    actorType: ActorType.None,
+  };
+}

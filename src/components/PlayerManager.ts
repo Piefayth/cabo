@@ -119,6 +119,13 @@ export class PlayerManager extends BaseDrawableComponent {
     const mat = new THREE.MeshStandardMaterial({ color: 0xffffff });
     this.mesh = new THREE.Mesh(geo, mat);
     this.services.get<THREE.Scene>("scene").add(this.mesh);
+
+    // Resolve the initial background-layer state so the first frame
+    // reflects reality rather than the default `false` from
+    // createComplexPhysicsState. Without this, the mechanic only
+    // activates on the first ground-movement tick or rotation.
+    this.physicsManager.viewpoint = camera.viewpoint;
+    this.physicsManager.determineInBackground(this.physics);
   }
 
   get position(): THREE.Vector3 {
