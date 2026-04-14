@@ -410,40 +410,63 @@ export class PhysicsManager {
         const trileHalfSize = getTransformedSize(instance, def)
           .multiplyScalar(0.5);
 
-        // Camera-facing face of the trile (relative to current layer).
+        // FEZ-faithful geometry:
+        //
+        //   trile near face = trileCenter + trileHalfSize * (-forward)
+        //     (the trile's camera-facing surface in the current layer)
+        //
+        //   entity back edge = entity.center + entityHalfDepth * forward
+        //     (the entity's scene-facing edge — the AABB-min corner in the
+        //      depth axis, what FEZ refers to as "entity.Center - halfSize")
+        //
+        // The snap fires whenever the trile's near face is scene-ward of
+        // the entity's back edge OR vice-versa — i.e., whenever the two
+        // aren't exactly flush. The resulting push is "attract to face":
+        // always moves the entity along the depth axis until its back
+        // edge aligns with the trile's camera-facing face.
+        //
+        // When the entity is in front of the face, the push pulls it
+        // backward; when behind, forward. This produces the observable
+        // FEZ behaviour of walking-into a non-AllSides trile snapping
+        // the player to that trile's depth, regardless of starting side.
         const trileFacePoint = trileCenter
           .clone()
           .add(vec3Mul(trileHalfSize, negFwd));
-
-        // Entity's scene-facing edge.
-        const entityEdge = entity.center
+        const entityProbe = entity.center
           .clone()
-          .add(vec3Mul(entityHalfDepth, fwd));
+          .add(vec3Mul(entityHalfDepth, fwd)); // back edge, toward scene
 
-        const diff = entityEdge.clone().sub(trileFacePoint);
+        const diff = entityProbe.clone().sub(trileFacePoint);
         const depthDot = diff.dot(negFwd);
 
-        if (depthDot < 0) {
-          // Entity edge is past the trile's camera face.
-          // FEZ pattern: determineBackground-and-deep OR keepInFront — NOT BOTH.
-          // If deep enough to count as Behind, skip pushback this iteration.
-          // Otherwise push back when keepInFront.
-          let markedBehind = false;
-          if (determineBackground) {
-            const totalSize =
-              vec3Mul(trileHalfSize, absFwd).length() +
-              entityHalfDepth.length();
-            if (Math.abs(depthDot) > totalSize) {
-              isBehind = true;
-              markedBehind = true;
-            }
+        // Behind-detection only fires when the entity is genuinely
+        // deep on the scene side of the trile's face (depthDot < 0
+        // AND penetration exceeds half the combined sizes). This
+        // gates the background-layer transition.
+        let markedBehind = false;
+        if (determineBackground && depthDot < 0) {
+          const totalSize =
+            vec3Mul(trileHalfSize, absFwd).length() +
+            entityHalfDepth.length();
+          if (Math.abs(depthDot) > totalSize) {
+            isBehind = true;
+            markedBehind = true;
           }
+        }
 
-          if (!markedBehind && keepInFront) {
-            const pushback = vec3Mul(diff, absFwd).negate();
-            entity.center.add(pushback);
-            hugged = true;
-          }
+        // Push "attract to face": move the entity along the depth axis
+        // until its back edge is flush with the trile's camera-facing
+        // face. Pushes in BOTH directions (negative depthDot → forward;
+        // positive depthDot → backward) so walking into a huggable
+        // trile from the camera side also snaps to the face.
+        //
+        // Skipped only when the Behind branch already fired (during
+        // determineBackground loops), matching FEZ's mutually-exclusive
+        // "Behind vs push" logic inside a single hugWalls iteration.
+        if (!markedBehind && keepInFront && Math.abs(depthDot) > 1e-6) {
+          const pushback = vec3Mul(diff, absFwd).negate();
+          entity.center.add(pushback);
+          hugged = true;
         }
       }
     }
