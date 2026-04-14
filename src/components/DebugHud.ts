@@ -49,6 +49,8 @@ export class DebugHud {
       #debug-hud .hl { color: #ff0; }
       #debug-hud .ok { color: #7f7; }
       #debug-hud .bad { color: #f77; }
+      #debug-hud .bg-on { color: #f0f; font-weight: bold; }
+      #debug-hud .bg-off { color: #555; }
     `;
     document.head.appendChild(style);
   }
@@ -65,7 +67,7 @@ export class DebugHud {
     const groundFarHigh = p.ground.farHigh ? "Y" : "-";
 
     const groundClass = p.grounded ? "ok" : "bad";
-    const bgClass = p.background ? "hl" : "";
+    const bgClass = p.background ? "bg-on" : "bg-off";
 
     const wcNear = p.wallCollision.nearLow.collided ? "Y" : "-";
     const wcFar = p.wallCollision.farHigh.collided ? "Y" : "-";

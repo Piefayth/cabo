@@ -52,9 +52,14 @@ export class Camera extends BaseComponent {
   private _endDirection = new THREE.Vector3(0, 0, 1);
   private _midDirection = new THREE.Vector3(0, 0, 1);
 
-  /** Listeners fired when a viewpoint change completes. Mirrors
-   *  DefaultCameraManager.ChangeViewpoint callbacks. */
+  /** Listeners fired when a viewpoint change STARTS (matches FEZ's
+   *  ChangeViewpoint event timing — fires with the target viewpoint). */
   private onRotateListeners: Array<(vp: Viewpoint) => void> = [];
+
+  /** Listeners fired when a viewpoint change COMPLETES (used for
+   *  deferred re-evaluation that needs the new viewpoint to be fully
+   *  active — e.g., DetermineInBackground). */
+  private onRotationCompleteListeners: Array<(vp: Viewpoint) => void> = [];
 
   center = new THREE.Vector3(0, 8, 0);
   /** Current viewable width (FEZ's PredefinedView.Radius equivalent). */
@@ -94,9 +99,16 @@ export class Camera extends BaseComponent {
     return this._transitionProgress;
   }
 
-  /** Register a callback that fires when a rotation completes. */
+  /** Fires at the START of a viewpoint transition (matches FEZ). */
   onRotate(cb: (vp: Viewpoint) => void): void {
     this.onRotateListeners.push(cb);
+  }
+
+  /** Fires at the END of a viewpoint transition, when the new
+   *  viewpoint is fully the current one. Used for deferred physics
+   *  re-evaluation. */
+  onRotationComplete(cb: (vp: Viewpoint) => void): void {
+    this.onRotationCompleteListeners.push(cb);
   }
 
   resize(width: number, height: number): void {
@@ -170,6 +182,9 @@ export class Camera extends BaseComponent {
       this._transitioning = false;
       this._viewpoint = this._targetViewpoint;
       this._applyCameraPosition();
+      // Fire completion listeners with the NEW viewpoint now fully
+      // active. Used for deferred physics re-evaluation.
+      for (const cb of this.onRotationCompleteListeners) cb(this._viewpoint);
       return;
     }
 

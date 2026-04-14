@@ -103,6 +103,14 @@ export class PlayerManager extends BaseDrawableComponent {
       new Idle(),
     ];
 
+    // Re-evaluate background layer when a viewpoint rotation completes.
+    // FEZ calls DetermineInBackground at the end of a viewpoint
+    // transition so that any trile newly in front of the player (or
+    // newly behind) reclassifies their layer.
+    camera.onRotationComplete(() => {
+      this.physicsManager.determineInBackground(this.physics);
+    });
+
     const geo = new THREE.BoxGeometry(
       PLAYER_SIZE.x,
       PLAYER_SIZE.y,
@@ -200,6 +208,12 @@ export class PlayerManager extends BaseDrawableComponent {
 
   private _updateMesh(): void {
     this.mesh.position.copy(this.physics.center);
+    // Background-layer debug tint — visible cue that foreground/
+    // background classification is live.
+    const mat = this.mesh.material as THREE.MeshStandardMaterial;
+    if (mat) {
+      mat.color.setHex(this.physics.background ? 0xff66ff : 0xffffff);
+    }
     // Face mesh toward camera
     const angle = Math.atan2(
       this.camera.camera.position.x - this.mesh.position.x,
