@@ -439,34 +439,35 @@ export class PhysicsManager {
         const diff = entityProbe.clone().sub(trileFacePoint);
         const depthDot = diff.dot(negFwd);
 
-        // Behind-detection only fires when the entity is genuinely
-        // deep on the scene side of the trile's face (depthDot < 0
-        // AND penetration exceeds half the combined sizes). This
-        // gates the background-layer transition.
-        let markedBehind = false;
-        if (determineBackground && depthDot < 0) {
-          const totalSize =
-            vec3Mul(trileHalfSize, absFwd).length() +
-            entityHalfDepth.length();
-          if (Math.abs(depthDot) > totalSize) {
-            isBehind = true;
-            markedBehind = true;
+        // Forward-only per FEZ: we only push the entity TOWARD the
+        // camera when its back edge has crossed past the trile's
+        // camera-facing face into the scene (depthDot < 0). We never
+        // pull the entity BACKWARD from in-front of a face — that
+        // would plant Gomez inside the wall. Verified against the
+        // decompiled HugWalls: the push branch is gated on
+        // FezMath.AlmostClamp(x) < 0.0.
+        if (depthDot < 0) {
+          // Behind-detection only when determineBackground=true AND the
+          // penetration is deep enough to be "genuinely behind".
+          let markedBehind = false;
+          if (determineBackground) {
+            const totalSize =
+              vec3Mul(trileHalfSize, absFwd).length() +
+              entityHalfDepth.length();
+            if (Math.abs(depthDot) > totalSize) {
+              isBehind = true;
+              markedBehind = true;
+            }
           }
-        }
 
-        // Push "attract to face": move the entity along the depth axis
-        // until its back edge is flush with the trile's camera-facing
-        // face. Pushes in BOTH directions (negative depthDot → forward;
-        // positive depthDot → backward) so walking into a huggable
-        // trile from the camera side also snaps to the face.
-        //
-        // Skipped only when the Behind branch already fired (during
-        // determineBackground loops), matching FEZ's mutually-exclusive
-        // "Behind vs push" logic inside a single hugWalls iteration.
-        if (!markedBehind && keepInFront && Math.abs(depthDot) > 1e-6) {
-          const pushback = vec3Mul(diff, absFwd).negate();
-          entity.center.add(pushback);
-          hugged = true;
+          // Push toward camera to make the entity's back edge flush
+          // with the trile's camera face. Skipped if the Behind branch
+          // fired (mutually exclusive per FEZ).
+          if (!markedBehind && keepInFront) {
+            const pushback = vec3Mul(diff, absFwd).negate();
+            entity.center.add(pushback);
+            hugged = true;
+          }
         }
       }
     }
@@ -502,14 +503,11 @@ export class PhysicsManager {
       return false;
     }
 
-    // Check the visible face. Huggable when non-Immaterial and
-    // non-TopNoStraightLedge. AllSides IS huggable — main collision
-    // handles the horizontal blocking, while the hug snaps the entity's
-    // depth to the face. Without AllSides being huggable, a player
-    // walking toward a solid wall at a different depth would phase
-    // through it depth-wise (wall blocks horizontally, but nothing
-    // aligns the player's Z with the wall's face, so on the next view
-    // rotation / movement they're still at their old depth).
+    // Verified against FEZ PhysicsManager.IsHuggable: the visible face
+    // must NOT be Immaterial, TopNoStraightLedge, or AllSides.
+    // AllSides is explicitly excluded — those are "handled by main
+    // collision, not wall hugging" per the original intent. TopOnly
+    // IS huggable and participates in depth snap.
     const face = visibleOrientation(this.viewpoint);
     const ct = getRotatedFace(
       face,
@@ -521,7 +519,8 @@ export class PhysicsManager {
 
     return (
       ct !== CollisionType.Immaterial &&
-      ct !== CollisionType.TopNoStraightLedge
+      ct !== CollisionType.TopNoStraightLedge &&
+      ct !== CollisionType.AllSides
     );
   }
 
