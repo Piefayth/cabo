@@ -38,6 +38,10 @@ const DEFAULT_FAR_PLANE = 500;
 /** Distance from center to camera along the direction vector.
  *  FEZ uses 249.95 for the orthographic look-at eye distance. */
 const CAMERA_DISTANCE = 249.95;
+/** Perspective FOV reached at the midpoint of a viewpoint transition.
+ *  FEZ's GameCameraManager.FirstPersonFov = 75°; we use a gentler 55°
+ *  which reads as a noticeable but not-jarring dolly-zoom during rotation. */
+const TRANSITION_FOV_DEG = 55;
 
 export class Camera extends BaseComponent {
   readonly camera: THREE.OrthographicCamera;
@@ -51,6 +55,12 @@ export class Camera extends BaseComponent {
   private _startDirection = new THREE.Vector3(0, 0, 1);
   private _endDirection = new THREE.Vector3(0, 0, 1);
   private _midDirection = new THREE.Vector3(0, 0, 1);
+
+  /** Cached orthographic projection matrix — used when not transitioning
+   *  and as one endpoint of the morph during transitions. */
+  private _orthoMatrix = new THREE.Matrix4();
+  /** Cached perspective projection matrix — the other endpoint of the morph. */
+  private _perspMatrix = new THREE.Matrix4();
 
   /** Listeners fired when a viewpoint change STARTS (matches FEZ's
    *  ChangeViewpoint event timing — fires with the target viewpoint). */
@@ -82,9 +92,48 @@ export class Camera extends BaseComponent {
       DEFAULT_NEAR_PLANE,
       DEFAULT_FAR_PLANE,
     );
+    this._rebuildProjectionMatrices();
     this._startDirection.copy(forwardVector(this._viewpoint)).negate();
     this._endDirection.copy(this._startDirection);
     this._applyCameraPosition();
+  }
+
+  /**
+   * Recomputes the cached ortho and perspective projection matrices
+   * for the current viewable width and aspect ratio. Call after any
+   * change to viewableWidth or aspect.
+   *
+   * Perspective matrix is sized so that at CAMERA_DISTANCE the visible
+   * rectangle matches the ortho view's rectangle — this keeps the
+   * player roughly the same size on screen at t=0 and t=1 of a
+   * transition, making the morph look like a dolly-zoom into 3D and
+   * back rather than a sudden scale jump.
+   */
+  private _rebuildProjectionMatrices(): void {
+    const hw = this.viewableWidth / 2;
+    const hh = hw / this._aspect;
+    this._orthoMatrix.makeOrthographic(
+      -hw,
+      hw,
+      hh,
+      -hh,
+      DEFAULT_NEAR_PLANE,
+      DEFAULT_FAR_PLANE,
+    );
+    // Compute the perspective FOV that reproduces the ortho view's
+    // half-height at CAMERA_DISTANCE: tan(fov/2) = hh / distance.
+    // But we override with TRANSITION_FOV_DEG for a more exaggerated
+    // dolly effect; geometry shifts laterally during the morph because
+    // the view frustum differs. The visual result is the "3D reveal".
+    const fov = (TRANSITION_FOV_DEG * Math.PI) / 180;
+    this._perspMatrix.makePerspective(
+      -Math.tan(fov / 2) * DEFAULT_NEAR_PLANE * this._aspect,
+      Math.tan(fov / 2) * DEFAULT_NEAR_PLANE * this._aspect,
+      Math.tan(fov / 2) * DEFAULT_NEAR_PLANE,
+      -Math.tan(fov / 2) * DEFAULT_NEAR_PLANE,
+      DEFAULT_NEAR_PLANE,
+      DEFAULT_FAR_PLANE,
+    );
   }
 
   get viewpoint(): Viewpoint {
@@ -120,6 +169,33 @@ export class Camera extends BaseComponent {
     this.camera.top = hh;
     this.camera.bottom = -hh;
     this.camera.updateProjectionMatrix();
+    this._rebuildProjectionMatrices();
+    if (!this._transitioning) this._applyOrtho();
+  }
+
+  /** Applies the cached ortho matrix to the Three.js camera. */
+  private _applyOrtho(): void {
+    this.camera.projectionMatrix.copy(this._orthoMatrix);
+    this.camera.projectionMatrixInverse
+      .copy(this._orthoMatrix)
+      .invert();
+  }
+
+  /** Applies a bell-curve blend of ortho → perspective → ortho
+   *  based on transition progress [0, 1]. */
+  private _applyMorph(progress: number): void {
+    // sin curve: 0 at t=0, 1 at t=0.5, 0 at t=1.
+    const blend = Math.sin(Math.PI * progress);
+    const o = this._orthoMatrix.elements;
+    const p = this._perspMatrix.elements;
+    const m = this.camera.projectionMatrix.elements;
+    for (let i = 0; i < 16; i++) {
+      m[i] = o[i] * (1 - blend) + p[i] * blend;
+    }
+    // Invalidate the inverse so Three.js recomputes it from the matrix.
+    this.camera.projectionMatrixInverse
+      .copy(this.camera.projectionMatrix)
+      .invert();
   }
 
   rotateViewRight(): void {
@@ -172,6 +248,7 @@ export class Camera extends BaseComponent {
   update(dt: number): void {
     if (!this._transitioning) {
       this._applyCameraPosition();
+      this._applyOrtho();
       return;
     }
 
@@ -182,6 +259,7 @@ export class Camera extends BaseComponent {
       this._transitioning = false;
       this._viewpoint = this._targetViewpoint;
       this._applyCameraPosition();
+      this._applyOrtho();
       // Fire completion listeners with the NEW viewpoint now fully
       // active. Used for deferred physics re-evaluation.
       for (const cb of this.onRotationCompleteListeners) cb(this._viewpoint);
@@ -193,6 +271,11 @@ export class Camera extends BaseComponent {
     // spline curve shape itself, not from easing the t parameter.
     const dir = this._splineDirection(this._transitionProgress);
     this._setCameraFromDirection(dir);
+
+    // Morph projection ortho → perspective → ortho over the course
+    // of the transition. Gives the signature FEZ "dolly zoom into
+    // the scene" effect as the camera rotates.
+    this._applyMorph(this._transitionProgress);
   }
 
   private _splineDirection(t: number): THREE.Vector3 {
