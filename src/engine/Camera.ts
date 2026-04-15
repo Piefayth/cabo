@@ -56,11 +56,11 @@ export class Camera extends BaseComponent {
   private _endDirection = new THREE.Vector3(0, 0, 1);
   private _midDirection = new THREE.Vector3(0, 0, 1);
 
-  /** Cached orthographic projection matrix — used when not transitioning
-   *  and as one endpoint of the morph during transitions. */
+  /** Cached orthographic projection matrix — applied when not
+   *  transitioning. Perspective matrices used during transitions are
+   *  built per-frame by _applyMorph since both the FOV and the
+   *  camera dolly distance depend on the transition blend factor. */
   private _orthoMatrix = new THREE.Matrix4();
-  /** Cached perspective projection matrix — the other endpoint of the morph. */
-  private _perspMatrix = new THREE.Matrix4();
 
   /** Listeners fired when a viewpoint change STARTS (matches FEZ's
    *  ChangeViewpoint event timing — fires with the target viewpoint). */
@@ -99,15 +99,11 @@ export class Camera extends BaseComponent {
   }
 
   /**
-   * Recomputes the cached ortho and perspective projection matrices
-   * for the current viewable width and aspect ratio. Call after any
-   * change to viewableWidth or aspect.
-   *
-   * Perspective matrix is sized so that at CAMERA_DISTANCE the visible
-   * rectangle matches the ortho view's rectangle — this keeps the
-   * player roughly the same size on screen at t=0 and t=1 of a
-   * transition, making the morph look like a dolly-zoom into 3D and
-   * back rather than a sudden scale jump.
+   * Recomputes the cached ortho projection matrix for the current
+   * viewable width and aspect. Perspective matrices are rebuilt
+   * per-frame during transitions because they depend on the blend
+   * factor (FOV lerps from ortho-equivalent narrow → TRANSITION_FOV
+   * wide). Dolly distance is computed to keep scene size constant.
    */
   private _rebuildProjectionMatrices(): void {
     const hw = this.viewableWidth / 2;
@@ -117,20 +113,6 @@ export class Camera extends BaseComponent {
       hw,
       hh,
       -hh,
-      DEFAULT_NEAR_PLANE,
-      DEFAULT_FAR_PLANE,
-    );
-    // Compute the perspective FOV that reproduces the ortho view's
-    // half-height at CAMERA_DISTANCE: tan(fov/2) = hh / distance.
-    // But we override with TRANSITION_FOV_DEG for a more exaggerated
-    // dolly effect; geometry shifts laterally during the morph because
-    // the view frustum differs. The visual result is the "3D reveal".
-    const fov = (TRANSITION_FOV_DEG * Math.PI) / 180;
-    this._perspMatrix.makePerspective(
-      -Math.tan(fov / 2) * DEFAULT_NEAR_PLANE * this._aspect,
-      Math.tan(fov / 2) * DEFAULT_NEAR_PLANE * this._aspect,
-      Math.tan(fov / 2) * DEFAULT_NEAR_PLANE,
-      -Math.tan(fov / 2) * DEFAULT_NEAR_PLANE,
       DEFAULT_NEAR_PLANE,
       DEFAULT_FAR_PLANE,
     );
@@ -181,21 +163,54 @@ export class Camera extends BaseComponent {
       .invert();
   }
 
-  /** Applies a bell-curve blend of ortho → perspective → ortho
-   *  based on transition progress [0, 1]. */
-  private _applyMorph(progress: number): void {
-    // sin curve: 0 at t=0, 1 at t=0.5, 0 at t=1.
+  /**
+   * Dolly-zoom morph during a viewpoint transition.
+   *
+   * Keeps subject size at the look-at point constant by dollying the
+   * camera closer as FOV widens (and back out as FOV narrows).
+   *
+   * Endpoints are ortho-equivalent: at blend=0 the FOV is so narrow
+   * that perspective is indistinguishable from ortho at
+   * CAMERA_DISTANCE, so the transition in/out is seamless with the
+   * ortho framing used when not transitioning.
+   *
+   * At blend=1 (midpoint) FOV is TRANSITION_FOV_DEG and the camera
+   * has pulled close enough that scene size at the look-at stays
+   * constant — producing the "Vertigo" / dolly-zoom visual that
+   * reveals the 3D structure without changing object size.
+   *
+   * Returns the effective camera distance for this frame so the
+   * caller can position the eye.
+   */
+  private _applyMorph(progress: number): number {
+    // Bell curve: 0 at t=0, 1 at t=0.5, 0 at t=1.
     const blend = Math.sin(Math.PI * progress);
-    const o = this._orthoMatrix.elements;
-    const p = this._perspMatrix.elements;
-    const m = this.camera.projectionMatrix.elements;
-    for (let i = 0; i < 16; i++) {
-      m[i] = o[i] * (1 - blend) + p[i] * blend;
-    }
-    // Invalidate the inverse so Three.js recomputes it from the matrix.
+    const hh = this.viewableWidth / 2 / this._aspect;
+    // FOV that makes a perspective camera at CAMERA_DISTANCE match the
+    // ortho view's rectangle — ≈3° for our setup. Indistinguishable
+    // from ortho visually, so blend=0 is seamless.
+    const orthoEquivFov = 2 * Math.atan(hh / CAMERA_DISTANCE);
+    const targetFov = (TRANSITION_FOV_DEG * Math.PI) / 180;
+    const fov = orthoEquivFov * (1 - blend) + targetFov * blend;
+    // Dolly distance — keeps half-height constant at the look-at.
+    const dollyD = hh / Math.tan(fov / 2);
+    // Build perspective matrix directly (cheaper than lerping a cached
+    // one and mathematically cleaner).
+    const ptan = Math.tan(fov / 2);
+    const t = ptan * DEFAULT_NEAR_PLANE;
+    const r = t * this._aspect;
+    this.camera.projectionMatrix.makePerspective(
+      -r,
+      r,
+      t,
+      -t,
+      DEFAULT_NEAR_PLANE,
+      DEFAULT_FAR_PLANE,
+    );
     this.camera.projectionMatrixInverse
       .copy(this.camera.projectionMatrix)
       .invert();
+    return dollyD;
   }
 
   rotateViewRight(): void {
@@ -270,12 +285,13 @@ export class Camera extends BaseComponent {
     // spline — no quadratic in/out. The smoothness comes from the
     // spline curve shape itself, not from easing the t parameter.
     const dir = this._splineDirection(this._transitionProgress);
-    this._setCameraFromDirection(dir);
 
-    // Morph projection ortho → perspective → ortho over the course
-    // of the transition. Gives the signature FEZ "dolly zoom into
-    // the scene" effect as the camera rotates.
-    this._applyMorph(this._transitionProgress);
+    // Morph projection + compute dolly-zoom camera distance. Returns
+    // the distance at which the current FOV produces the same subject
+    // size as the ortho view at CAMERA_DISTANCE — so scene size stays
+    // constant while FOV widens and the camera pulls closer.
+    const dollyDistance = this._applyMorph(this._transitionProgress);
+    this._setCameraFromDirection(dir, dollyDistance);
   }
 
   private _splineDirection(t: number): THREE.Vector3 {
@@ -295,13 +311,18 @@ export class Camera extends BaseComponent {
     this._setCameraFromDirection(dir);
   }
 
-  private _setCameraFromDirection(dir: THREE.Vector3): void {
+  private _setCameraFromDirection(
+    dir: THREE.Vector3,
+    distance: number = CAMERA_DISTANCE,
+  ): void {
     // dir points FROM center TOWARD the camera's desired position.
     const eye = this.center.clone().add(
-      dir.clone().multiplyScalar(CAMERA_DISTANCE),
+      dir.clone().multiplyScalar(distance),
     );
     this.camera.position.copy(eye);
     this.camera.lookAt(this.center);
-    this.camera.updateProjectionMatrix();
+    // NOTE: do NOT call updateProjectionMatrix here — _applyOrtho or
+    // _applyMorph manages projectionMatrix directly and Three's auto
+    // update would stomp the morph mid-transition.
   }
 }
